@@ -1,10 +1,11 @@
-from sentence_transformers import SentenceTransformer, LoggingHandler, InputExample
-from sentence_transformers import models, util, evaluation, losses
+import gzip
 import logging
 import os
-import gzip
 from datetime import datetime
+
 from torch.utils.data import DataLoader
+
+from sentence_transformers import InputExample, LoggingHandler, SentenceTransformer, evaluation, losses, models, util
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -78,7 +79,7 @@ for id, sentence in corpus.items():
     if id not in dev_test_ids:
         train_sentences.append(InputExample(texts=[sentence, sentence]))
 
-logging.info("{} train sentences".format(len(train_sentences)))
+logging.info(f"{len(train_sentences)} train sentences")
 
 ################# Initialize an SBERT model #################
 
@@ -103,6 +104,8 @@ logging.info("Start training")
 
 model.fit(
     train_objectives=[(train_dataloader, train_loss)],
+    evaluator=dev_evaluator,
+    evaluation_steps=100,
     epochs=1,
     warmup_steps=100,
     use_amp=True,  # Set to True, if your GPU has optimized FP16 cores

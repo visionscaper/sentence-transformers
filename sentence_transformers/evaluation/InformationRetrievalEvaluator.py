@@ -1,14 +1,22 @@
-from . import SentenceEvaluator
+from __future__ import annotations
+
+import heapq
+import logging
+import os
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Callable
+
+import numpy as np
 import torch
 from torch import Tensor
-import logging
 from tqdm import trange
-from ..util import cos_sim, dot_score
-import os
-import numpy as np
-from typing import List, Dict, Set, Callable
-import heapq
 
+from sentence_transformers.evaluation.SentenceEvaluator import SentenceEvaluator
+from sentence_transformers.similarity_functions import SimilarityFunction
+from sentence_transformers.util import cos_sim, dot_score
+
+if TYPE_CHECKING:
+    from sentence_transformers.SentenceTransformer import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -19,29 +27,135 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
 
     Given a set of queries and a large corpus set. It will retrieve for each query the top-k most similar document. It measures
     Mean Reciprocal Rank (MRR), Recall@k, and Normalized Discounted Cumulative Gain (NDCG)
+
+    Example:
+        ::
+
+            import random
+            from sentence_transformers import SentenceTransformer
+            from sentence_transformers.evaluation import InformationRetrievalEvaluator
+            from datasets import load_dataset
+
+            # Load a model
+            model = SentenceTransformer('all-mpnet-base-v2')
+
+            # Load the Quora IR dataset (https://huggingface.co/datasets/BeIR/quora, https://huggingface.co/datasets/BeIR/quora-qrels)
+            corpus = load_dataset("BeIR/quora", "corpus", split="corpus")
+            queries = load_dataset("BeIR/quora", "queries", split="queries")
+            relevant_docs_data = load_dataset("BeIR/quora-qrels", split="validation")
+
+            # Shrink the corpus size heavily to only the relevant documents + 10,000 random documents
+            required_corpus_ids = list(map(str, relevant_docs_data["corpus-id"]))
+            required_corpus_ids += random.sample(corpus["_id"], k=10_000)
+            corpus = corpus.filter(lambda x: x["_id"] in required_corpus_ids)
+
+            # Convert the datasets to dictionaries
+            corpus = dict(zip(corpus["_id"], corpus["text"]))  # Our corpus (cid => document)
+            queries = dict(zip(queries["_id"], queries["text"]))  # Our queries (qid => question)
+            relevant_docs = {}  # Query ID to relevant documents (qid => set([relevant_cids])
+            for qid, corpus_ids in zip(relevant_docs_data["query-id"], relevant_docs_data["corpus-id"]):
+                qid = str(qid)
+                corpus_ids = str(corpus_ids)
+                if qid not in relevant_docs:
+                    relevant_docs[qid] = set()
+                relevant_docs[qid].add(corpus_ids)
+
+            # Given queries, a corpus and a mapping with relevant documents, the InformationRetrievalEvaluator computes different IR metrics.
+            ir_evaluator = InformationRetrievalEvaluator(
+                queries=queries,
+                corpus=corpus,
+                relevant_docs=relevant_docs,
+                name="BeIR-quora-dev",
+            )
+            results = ir_evaluator(model)
+            '''
+            Information Retrieval Evaluation of the model on the BeIR-quora-dev dataset:
+            Queries: 5000
+            Corpus: 17476
+
+            Score-Function: cosine
+            Accuracy@1: 96.26%
+            Accuracy@3: 99.38%
+            Accuracy@5: 99.74%
+            Accuracy@10: 99.94%
+            Precision@1: 96.26%
+            Precision@3: 43.01%
+            Precision@5: 27.66%
+            Precision@10: 14.58%
+            Recall@1: 82.93%
+            Recall@3: 96.28%
+            Recall@5: 98.38%
+            Recall@10: 99.55%
+            MRR@10: 0.9782
+            NDCG@10: 0.9807
+            MAP@100: 0.9732
+            Score-Function: dot
+            Accuracy@1: 96.26%
+            Accuracy@3: 99.38%
+            Accuracy@5: 99.74%
+            Accuracy@10: 99.94%
+            Precision@1: 96.26%
+            Precision@3: 43.01%
+            Precision@5: 27.66%
+            Precision@10: 14.58%
+            Recall@1: 82.93%
+            Recall@3: 96.28%
+            Recall@5: 98.38%
+            Recall@10: 99.55%
+            MRR@10: 0.9782
+            NDCG@10: 0.9807
+            MAP@100: 0.9732
+            '''
+            print(ir_evaluator.primary_metric)
+            # => "BeIR-quora-dev_cosine_map@100"
+            print(results[ir_evaluator.primary_metric])
+            # => 0.9732046108457585
     """
 
     def __init__(
         self,
-        queries: Dict[str, str],  # qid => query
-        corpus: Dict[str, str],  # cid => doc
-        relevant_docs: Dict[str, Set[str]],  # qid => Set[cid]
+        queries: dict[str, str],  # qid => query
+        corpus: dict[str, str],  # cid => doc
+        relevant_docs: dict[str, set[str]],  # qid => Set[cid]
         corpus_chunk_size: int = 50000,
-        mrr_at_k: List[int] = [10],
-        ndcg_at_k: List[int] = [10],
-        accuracy_at_k: List[int] = [1, 3, 5, 10],
-        precision_recall_at_k: List[int] = [1, 3, 5, 10],
-        map_at_k: List[int] = [100],
+        mrr_at_k: list[int] = [10],
+        ndcg_at_k: list[int] = [10],
+        accuracy_at_k: list[int] = [1, 3, 5, 10],
+        precision_recall_at_k: list[int] = [1, 3, 5, 10],
+        map_at_k: list[int] = [100],
         show_progress_bar: bool = False,
         batch_size: int = 32,
         name: str = "",
         write_csv: bool = True,
-        score_functions: Dict[str, Callable[[Tensor, Tensor], Tensor]] = {
-            "cos_sim": cos_sim,
-            "dot_score": dot_score,
+        truncate_dim: int | None = None,
+        score_functions: dict[str, Callable[[Tensor, Tensor], Tensor]] = {
+            SimilarityFunction.COSINE.value: cos_sim,
+            SimilarityFunction.DOT_PRODUCT.value: dot_score,
         },  # Score function, higher=more similar
-        main_score_function: str = None,
-    ):
+        main_score_function: str | SimilarityFunction | None = None,
+    ) -> None:
+        """
+        Initializes the InformationRetrievalEvaluator.
+
+        Args:
+            queries (Dict[str, str]): A dictionary mapping query IDs to queries.
+            corpus (Dict[str, str]): A dictionary mapping document IDs to documents.
+            relevant_docs (Dict[str, Set[str]]): A dictionary mapping query IDs to a set of relevant document IDs.
+            corpus_chunk_size (int): The size of each chunk of the corpus. Defaults to 50000.
+            mrr_at_k (List[int]): A list of integers representing the values of k for MRR calculation. Defaults to [10].
+            ndcg_at_k (List[int]): A list of integers representing the values of k for NDCG calculation. Defaults to [10].
+            accuracy_at_k (List[int]): A list of integers representing the values of k for accuracy calculation. Defaults to [1, 3, 5, 10].
+            precision_recall_at_k (List[int]): A list of integers representing the values of k for precision and recall calculation. Defaults to [1, 3, 5, 10].
+            map_at_k (List[int]): A list of integers representing the values of k for MAP calculation. Defaults to [100].
+            show_progress_bar (bool): Whether to show a progress bar during evaluation. Defaults to False.
+            batch_size (int): The batch size for evaluation. Defaults to 32.
+            name (str): A name for the evaluation. Defaults to "".
+            write_csv (bool): Whether to write the evaluation results to a CSV file. Defaults to True.
+            truncate_dim (int, optional): The dimension to truncate the embeddings to. Defaults to None.
+            score_functions (Dict[str, Callable[[Tensor, Tensor], Tensor]]): A dictionary mapping score function names to score functions. Defaults to {SimilarityFunction.COSINE.value: cos_sim, SimilarityFunction.DOT_PRODUCT.value: dot_score}.
+            main_score_function (Union[str, SimilarityFunction], optional): The main score function to use for evaluation. Defaults to None.
+        """
+        super().__init__()
         self.queries_ids = []
         for qid in queries:
             if qid in relevant_docs and len(relevant_docs[qid]) > 0:
@@ -66,7 +180,8 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         self.write_csv = write_csv
         self.score_functions = score_functions
         self.score_function_names = sorted(list(self.score_functions.keys()))
-        self.main_score_function = main_score_function
+        self.main_score_function = SimilarityFunction(main_score_function) if main_score_function else None
+        self.truncate_dim = truncate_dim
 
         if name:
             name = "_" + name
@@ -76,32 +191,35 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
 
         for score_name in self.score_function_names:
             for k in accuracy_at_k:
-                self.csv_headers.append("{}-Accuracy@{}".format(score_name, k))
+                self.csv_headers.append(f"{score_name}-Accuracy@{k}")
 
             for k in precision_recall_at_k:
-                self.csv_headers.append("{}-Precision@{}".format(score_name, k))
-                self.csv_headers.append("{}-Recall@{}".format(score_name, k))
+                self.csv_headers.append(f"{score_name}-Precision@{k}")
+                self.csv_headers.append(f"{score_name}-Recall@{k}")
 
             for k in mrr_at_k:
-                self.csv_headers.append("{}-MRR@{}".format(score_name, k))
+                self.csv_headers.append(f"{score_name}-MRR@{k}")
 
             for k in ndcg_at_k:
-                self.csv_headers.append("{}-NDCG@{}".format(score_name, k))
+                self.csv_headers.append(f"{score_name}-NDCG@{k}")
 
             for k in map_at_k:
-                self.csv_headers.append("{}-MAP@{}".format(score_name, k))
+                self.csv_headers.append(f"{score_name}-MAP@{k}")
 
-    def __call__(self, model, output_path: str = None, epoch: int = -1, steps: int = -1, *args, **kwargs) -> float:
+    def __call__(
+        self, model: SentenceTransformer, output_path: str = None, epoch: int = -1, steps: int = -1, *args, **kwargs
+    ) -> dict[str, float]:
         if epoch != -1:
-            out_txt = (
-                " after epoch {}:".format(epoch)
-                if steps == -1
-                else " in epoch {} after {} steps:".format(epoch, steps)
-            )
+            if steps == -1:
+                out_txt = f" after epoch {epoch}"
+            else:
+                out_txt = f" in epoch {epoch} after {steps} steps"
         else:
-            out_txt = ":"
+            out_txt = ""
+        if self.truncate_dim is not None:
+            out_txt += f" (truncated to {self.truncate_dim})"
 
-        logger.info("Information Retrieval Evaluation on " + self.name + " dataset" + out_txt)
+        logger.info(f"Information Retrieval Evaluation of the model on the {self.name} dataset{out_txt}:")
 
         scores = self.compute_metrices(model, *args, **kwargs)
 
@@ -138,12 +256,29 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
             fOut.write("\n")
             fOut.close()
 
-        if self.main_score_function is None:
-            return max([scores[name]["map@k"][max(self.map_at_k)] for name in self.score_function_names])
-        else:
-            return scores[self.main_score_function]["map@k"][max(self.map_at_k)]
+        if not self.primary_metric:
+            if self.main_score_function is None:
+                score_function = max(
+                    [(name, scores[name]["map@k"][max(self.map_at_k)]) for name in self.score_function_names],
+                    key=lambda x: x[1],
+                )[0]
+                self.primary_metric = f"{score_function}_map@{max(self.map_at_k)}"
+            else:
+                self.primary_metric = f"{self.main_score_function.value}_map@{max(self.map_at_k)}"
 
-    def compute_metrices(self, model, corpus_model=None, corpus_embeddings: Tensor = None) -> Dict[str, float]:
+        metrics = {
+            f"{score_function}_{metric_name.replace('@k', '@' + str(k))}": value
+            for score_function, values_dict in scores.items()
+            for metric_name, values in values_dict.items()
+            for k, value in values.items()
+        }
+        metrics = self.prefix_name_to_metrics(metrics, self.name)
+        self.store_metrics_in_model_card_data(model, metrics)
+        return metrics
+
+    def compute_metrices(
+        self, model: SentenceTransformer, corpus_model=None, corpus_embeddings: Tensor = None
+    ) -> dict[str, float]:
         if corpus_model is None:
             corpus_model = model
 
@@ -156,9 +291,13 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         )
 
         # Compute embedding for the queries
-        query_embeddings = model.encode(
-            self.queries, show_progress_bar=self.show_progress_bar, batch_size=self.batch_size, convert_to_tensor=True
-        )
+        with nullcontext() if self.truncate_dim is None else model.truncate_sentence_embeddings(self.truncate_dim):
+            query_embeddings = model.encode(
+                self.queries,
+                show_progress_bar=self.show_progress_bar,
+                batch_size=self.batch_size,
+                convert_to_tensor=True,
+            )
 
         queries_result_list = {}
         for name in self.score_functions:
@@ -172,12 +311,15 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
 
             # Encode chunk of corpus
             if corpus_embeddings is None:
-                sub_corpus_embeddings = corpus_model.encode(
-                    self.corpus[corpus_start_idx:corpus_end_idx],
-                    show_progress_bar=False,
-                    batch_size=self.batch_size,
-                    convert_to_tensor=True,
-                )
+                with nullcontext() if self.truncate_dim is None else corpus_model.truncate_sentence_embeddings(
+                    self.truncate_dim
+                ):
+                    sub_corpus_embeddings = corpus_model.encode(
+                        self.corpus[corpus_start_idx:corpus_end_idx],
+                        show_progress_bar=False,
+                        batch_size=self.batch_size,
+                        convert_to_tensor=True,
+                    )
             else:
                 sub_corpus_embeddings = corpus_embeddings[corpus_start_idx:corpus_end_idx]
 
@@ -210,20 +352,20 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                     score, corpus_id = queries_result_list[name][query_itr][doc_itr]
                     queries_result_list[name][query_itr][doc_itr] = {"corpus_id": corpus_id, "score": score}
 
-        logger.info("Queries: {}".format(len(self.queries)))
-        logger.info("Corpus: {}\n".format(len(self.corpus)))
+        logger.info(f"Queries: {len(self.queries)}")
+        logger.info(f"Corpus: {len(self.corpus)}\n")
 
         # Compute scores
         scores = {name: self.compute_metrics(queries_result_list[name]) for name in self.score_functions}
 
         # Output
         for name in self.score_function_names:
-            logger.info("Score-Function: {}".format(name))
+            logger.info(f"Score-Function: {name}")
             self.output_scores(scores[name])
 
         return scores
 
-    def compute_metrics(self, queries_result_list: List[object]):
+    def compute_metrics(self, queries_result_list: list[object]):
         # Init score computation values
         num_hits_at_k = {k: 0 for k in self.accuracy_at_k}
         precisions_at_k = {k: [] for k in self.precision_recall_at_k}

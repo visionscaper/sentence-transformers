@@ -4,8 +4,9 @@ sentences in parallel. This gives a near linear speed-up
 when encoding large text collections.
 """
 
-from sentence_transformers import SentenceTransformer, LoggingHandler
 import logging
+
+from sentence_transformers import LoggingHandler, SentenceTransformer
 
 logging.basicConfig(
     format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO, handlers=[LoggingHandler()]
@@ -14,7 +15,7 @@ logging.basicConfig(
 # Important, you need to shield your code with if __name__. Otherwise, CUDA runs into issues when spawning new processes.
 if __name__ == "__main__":
     # Create a large list of 100k sentences
-    sentences = ["This is sentence {}".format(i) for i in range(100000)]
+    sentences = [f"This is sentence {i}" for i in range(100000)]
 
     # Define the model
     model = SentenceTransformer("all-MiniLM-L6-v2")

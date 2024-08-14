@@ -1,18 +1,19 @@
-import sys
-import json
-from torch.utils.data import DataLoader
-from sentence_transformers import SentenceTransformer, LoggingHandler, util, models, losses, InputExample
-import logging
-from datetime import datetime
-import gzip
-import os
-import tarfile
-import tqdm
-from torch.utils.data import Dataset
-import random
-from shutil import copyfile
-import pickle
 import argparse
+import gzip
+import json
+import logging
+import os
+import pickle
+import random
+import sys
+import tarfile
+from datetime import datetime
+from shutil import copyfile
+
+import tqdm
+from torch.utils.data import DataLoader, Dataset
+
+from sentence_transformers import InputExample, LoggingHandler, SentenceTransformer, losses, models, util
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -89,13 +90,13 @@ if not os.path.exists(collection_filepath):
     tar_filepath = os.path.join(data_folder, "collection.tar.gz")
     if not os.path.exists(tar_filepath):
         logging.info("Download collection.tar.gz")
-        util.http_get("https://msmarco.blob.core.windows.net/msmarcoranking/collection.tar.gz", tar_filepath)
+        util.http_get("https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz", tar_filepath)
 
     with tarfile.open(tar_filepath, "r:gz") as tar:
         tar.extractall(path=data_folder)
 
 logging.info("Read corpus: collection.tsv")
-with open(collection_filepath, "r", encoding="utf8") as fIn:
+with open(collection_filepath, encoding="utf8") as fIn:
     for line in fIn:
         pid, passage = line.strip().split("\t")
         pid = int(pid)
@@ -109,13 +110,13 @@ if not os.path.exists(queries_filepath):
     tar_filepath = os.path.join(data_folder, "queries.tar.gz")
     if not os.path.exists(tar_filepath):
         logging.info("Download queries.tar.gz")
-        util.http_get("https://msmarco.blob.core.windows.net/msmarcoranking/queries.tar.gz", tar_filepath)
+        util.http_get("https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz", tar_filepath)
 
     with tarfile.open(tar_filepath, "r:gz") as tar:
         tar.extractall(path=data_folder)
 
 
-with open(queries_filepath, "r", encoding="utf8") as fIn:
+with open(queries_filepath, encoding="utf8") as fIn:
     for line in fIn:
         qid, query = line.strip().split("\t")
         qid = int(qid)
@@ -165,7 +166,7 @@ with gzip.open(hard_negatives_filepath, "rt") as fIn:
                 negs_to_use = args.negs_to_use.split(",")
             else:  # Use all systems
                 negs_to_use = list(data["neg"].keys())
-            logging.info("Using negatives from the following systems:", negs_to_use)
+            logging.info("Using negatives from the following systems: {}".format(", ".join(negs_to_use)))
 
         for system_name in negs_to_use:
             if system_name not in data["neg"]:
@@ -188,7 +189,7 @@ with gzip.open(hard_negatives_filepath, "rt") as fIn:
                 "neg": neg_pids,
             }
 
-logging.info("Train queries: {}".format(len(train_queries)))
+logging.info(f"Train queries: {len(train_queries)}")
 
 
 # We create a custom MSMARCO dataset that returns triplets (query, positive, negative)

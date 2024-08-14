@@ -29,9 +29,9 @@ This python code automates the download and creation of the parallel sentences f
 
 """
 
-from opustools import OpusRead
 import os
 
+from opustools import OpusRead
 
 corpora = ["JW300"]  # Corpora you want to use
 source_languages = ["en"]  # Source language, our teacher model is able to understand
@@ -46,7 +46,7 @@ os.makedirs(output_folder, exist_ok=True)
 for corpus in corpora:
     for src_lang in source_languages:
         for trg_lang in target_languages:
-            output_filename = os.path.join(output_folder, "{}-{}-{}.tsv.gz".format(corpus, src_lang, trg_lang))
+            output_filename = os.path.join(output_folder, f"{corpus}-{src_lang}-{trg_lang}.tsv.gz")
             if not os.path.exists(output_filename):
                 print("Create:", output_filename)
                 try:

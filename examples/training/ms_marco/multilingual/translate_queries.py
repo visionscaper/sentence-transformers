@@ -8,12 +8,14 @@ Usage:
 python translate_queries [target_language]
 """
 
-import os
-from sentence_transformers import LoggingHandler, util
 import logging
-import tarfile
-from easynmt import EasyNMT
+import os
 import sys
+import tarfile
+
+from easynmt import EasyNMT
+
+from sentence_transformers import LoggingHandler, util
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -25,14 +27,14 @@ target_lang = sys.argv[1]
 output_folder = "multilingual-data"
 data_folder = "../msmarco-data"
 
-output_filename = os.path.join(output_folder, "train_queries.en-{}.tsv".format(target_lang))
+output_filename = os.path.join(output_folder, f"train_queries.en-{target_lang}.tsv")
 os.makedirs(output_folder, exist_ok=True)
 
 
 ## Does the output file exists? If yes, read it so we can continue the translation
 translated_qids = set()
 if os.path.exists(output_filename):
-    with open(output_filename, "r", encoding="utf8") as fIn:
+    with open(output_filename, encoding="utf8") as fIn:
         for line in fIn:
             splits = line.strip().split("\t")
             translated_qids.add(splits[0])
@@ -44,7 +46,7 @@ os.makedirs(data_folder, exist_ok=True)
 train_queries = {}
 qrels_train = os.path.join(data_folder, "qrels.train.tsv")
 if not os.path.exists(qrels_train):
-    util.http_get("https://msmarco.blob.core.windows.net/msmarcoranking/qrels.train.tsv", qrels_train)
+    util.http_get("https://msmarco.z22.web.core.windows.net/msmarcoranking/qrels.train.tsv", qrels_train)
 
 with open(qrels_train) as fIn:
     for line in fIn:
@@ -58,13 +60,13 @@ if not os.path.exists(queries_filepath):
     tar_filepath = os.path.join(data_folder, "queries.tar.gz")
     if not os.path.exists(tar_filepath):
         logging.info("Download queries.tar.gz")
-        util.http_get("https://msmarco.blob.core.windows.net/msmarcoranking/queries.tar.gz", tar_filepath)
+        util.http_get("https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz", tar_filepath)
 
     with tarfile.open(tar_filepath, "r:gz") as tar:
         tar.extractall(path=data_folder)
 
 
-with open(queries_filepath, "r", encoding="utf8") as fIn:
+with open(queries_filepath, encoding="utf8") as fIn:
     for line in fIn:
         qid, query = line.strip().split("\t")
         if qid in train_queries:
@@ -77,7 +79,7 @@ queries = [train_queries[qid] for qid in qids]
 # Define our translation model
 translation_model = EasyNMT("opus-mt")
 
-print("Start translation of {} queries.".format(len(queries)))
+print(f"Start translation of {len(queries)} queries.")
 print("This can take a while. But you can stop this script at any point")
 
 

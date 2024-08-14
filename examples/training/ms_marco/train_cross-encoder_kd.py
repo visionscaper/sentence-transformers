@@ -17,17 +17,18 @@ Running this script:
 python train_cross-encoder-v2.py
 """
 
-from torch.utils.data import DataLoader
-from sentence_transformers import LoggingHandler, util
-from sentence_transformers.cross_encoder import CrossEncoder
-from sentence_transformers.cross_encoder.evaluation import CERerankingEvaluator
-from sentence_transformers import InputExample
-import logging
-from datetime import datetime
 import gzip
+import logging
 import os
 import tarfile
+from datetime import datetime
+
 import torch
+from torch.utils.data import DataLoader
+
+from sentence_transformers import InputExample, LoggingHandler, util
+from sentence_transformers.cross_encoder import CrossEncoder
+from sentence_transformers.cross_encoder.evaluation import CERerankingEvaluator
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -64,12 +65,12 @@ if not os.path.exists(collection_filepath):
     tar_filepath = os.path.join(data_folder, "collection.tar.gz")
     if not os.path.exists(tar_filepath):
         logging.info("Download collection.tar.gz")
-        util.http_get("https://msmarco.blob.core.windows.net/msmarcoranking/collection.tar.gz", tar_filepath)
+        util.http_get("https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz", tar_filepath)
 
     with tarfile.open(tar_filepath, "r:gz") as tar:
         tar.extractall(path=data_folder)
 
-with open(collection_filepath, "r", encoding="utf8") as fIn:
+with open(collection_filepath, encoding="utf8") as fIn:
     for line in fIn:
         pid, passage = line.strip().split("\t")
         corpus[pid] = passage
@@ -82,13 +83,13 @@ if not os.path.exists(queries_filepath):
     tar_filepath = os.path.join(data_folder, "queries.tar.gz")
     if not os.path.exists(tar_filepath):
         logging.info("Download queries.tar.gz")
-        util.http_get("https://msmarco.blob.core.windows.net/msmarcoranking/queries.tar.gz", tar_filepath)
+        util.http_get("https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz", tar_filepath)
 
     with tarfile.open(tar_filepath, "r:gz") as tar:
         tar.extractall(path=data_folder)
 
 
-with open(queries_filepath, "r", encoding="utf8") as fIn:
+with open(queries_filepath, encoding="utf8") as fIn:
     for line in fIn:
         qid, query = line.strip().split("\t")
         queries[qid] = query
@@ -155,7 +156,7 @@ evaluator = CERerankingEvaluator(dev_samples, name="train-eval")
 
 # Configure the training
 warmup_steps = 5000
-logging.info("Warmup-steps: {}".format(warmup_steps))
+logging.info(f"Warmup-steps: {warmup_steps}")
 
 
 # Train the model

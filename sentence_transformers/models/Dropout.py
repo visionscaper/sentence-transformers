@@ -1,22 +1,24 @@
-from torch import Tensor
-from torch import nn
-from typing import Dict
-import os
+from __future__ import annotations
+
 import json
+import os
+
+from torch import Tensor, nn
 
 
 class Dropout(nn.Module):
     """Dropout layer.
 
-    :param dropout: Sets a dropout value for dense layer.
+    Args:
+        dropout: Sets a dropout value for dense layer.
     """
 
     def __init__(self, dropout: float = 0.2):
-        super(Dropout, self).__init__()
+        super().__init__()
         self.dropout = dropout
         self.dropout_layer = nn.Dropout(self.dropout)
 
-    def forward(self, features: Dict[str, Tensor]):
+    def forward(self, features: dict[str, Tensor]):
         features.update({"sentence_embedding": self.dropout_layer(features["sentence_embedding"])})
         return features
 

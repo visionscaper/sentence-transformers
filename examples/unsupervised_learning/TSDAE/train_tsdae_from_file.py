@@ -8,14 +8,15 @@ python train_tsdae_from_file.py path/to/sentences.txt
 
 """
 
-from sentence_transformers import SentenceTransformer, LoggingHandler
-from sentence_transformers import models, datasets, losses
-import logging
 import gzip
-from torch.utils.data import DataLoader
-from datetime import datetime
+import logging
 import sys
+from datetime import datetime
+
 import tqdm
+from torch.utils.data import DataLoader
+
+from sentence_transformers import LoggingHandler, SentenceTransformer, datasets, losses, models
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -29,7 +30,7 @@ batch_size = 8
 
 # Input file path (a text file, each line a sentence)
 if len(sys.argv) < 2:
-    print("Run this script with: python {} path/to/sentences.txt".format(sys.argv[0]))
+    print(f"Run this script with: python {sys.argv[0]} path/to/sentences.txt")
     exit()
 
 filepath = sys.argv[1]
@@ -53,7 +54,7 @@ with gzip.open(filepath, "rt", encoding="utf8") if filepath.endswith(".gz") else
             train_sentences.append(line)
 
 
-logging.info("{} train sentences".format(len(train_sentences)))
+logging.info(f"{len(train_sentences)} train sentences")
 
 ################# Initialize an SBERT model #################
 

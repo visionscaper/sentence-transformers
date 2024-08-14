@@ -2,19 +2,35 @@
 Tests general behaviour of the SentenceTransformer class
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import tempfile
+from functools import partial
+from pathlib import Path
+from typing import Dict, List, Literal, cast
+
 import numpy as np
 import pytest
-
-from huggingface_hub import HfApi, RepoUrl, GitRefs, GitRefInfo
 import torch
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.models import Normalize, Transformer, Pooling
+from huggingface_hub import GitRefInfo, GitRefs, HfApi, RepoUrl
+from torch import nn
+
+from sentence_transformers import SentenceTransformer, util
+from sentence_transformers.models import (
+    CNN,
+    LSTM,
+    Dense,
+    LayerNorm,
+    Normalize,
+    Pooling,
+    Transformer,
+    WeightedLayerPooling,
+)
+from sentence_transformers.similarity_functions import SimilarityFunction
 
 
 def test_load_with_safetensors() -> None:
@@ -325,7 +341,7 @@ def test_save_load_prompts() -> None:
         model.save(str(model_path))
         config_path = model_path / "config_sentence_transformers.json"
         assert config_path.exists()
-        with open(config_path, "r", encoding="utf8") as f:
+        with open(config_path, encoding="utf8") as f:
             saved_config = json.load(f)
         assert saved_config["prompts"] == {"query": "query: "}
         assert saved_config["default_prompt_name"] == "query"
@@ -333,6 +349,48 @@ def test_save_load_prompts() -> None:
         fresh_model = SentenceTransformer(str(model_path))
         assert fresh_model.prompts == {"query": "query: "}
         assert fresh_model.default_prompt_name == "query"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA must be available to test float16 support.")
+def test_load_with_torch_dtype() -> None:
+    model = SentenceTransformer("sentence-transformers-testing/stsb-bert-tiny-safetensors")
+
+    assert model.encode(["Hello there!"], convert_to_tensor=True).dtype == torch.float32
+
+    with tempfile.TemporaryDirectory() as tmp_folder:
+        fp16_model_dir = Path(tmp_folder) / "fp16_model"
+        model.half()
+        model.save(str(fp16_model_dir))
+        del model
+
+        fp16_model = SentenceTransformer(
+            str(fp16_model_dir),
+            model_kwargs={"torch_dtype": "auto"},
+        )
+        assert fp16_model.encode(["Hello there!"], convert_to_tensor=True).dtype == torch.float16
+
+
+def test_load_with_model_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    transformer_kwargs = {}
+    original_transformer_init = Transformer.__init__
+
+    def transformers_init(*args, **kwargs):
+        nonlocal transformer_kwargs
+        nonlocal original_transformer_init
+        transformer_kwargs = kwargs
+        return original_transformer_init(*args, **kwargs)
+
+    monkeypatch.setattr(Transformer, "__init__", transformers_init)
+
+    SentenceTransformer(
+        "sentence-transformers-testing/stsb-bert-tiny-safetensors",
+        model_kwargs={"attn_implementation": "eager", "low_cpu_mem_usage": False},
+    )
+
+    assert "low_cpu_mem_usage" in transformer_kwargs["model_args"]
+    assert transformer_kwargs["model_args"]["low_cpu_mem_usage"] is False
+    assert "attn_implementation" in transformer_kwargs["model_args"]
+    assert transformer_kwargs["model_args"]["attn_implementation"] == "eager"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA must be available to test float16 support.")
@@ -380,3 +438,229 @@ def test_encode_quantization(
     else:
         assert embeddings[0].dtype == expected_torch_dtype
         assert isinstance(embeddings, list)
+
+
+@pytest.mark.parametrize("sentences", ("Single sentence", ["One sentence", "Another sentence"]))
+@pytest.mark.parametrize("convert_to_tensor", [True, False])
+@pytest.mark.parametrize("convert_to_numpy", [True, False])
+@pytest.mark.parametrize("normalize_embeddings", [True, False])
+@pytest.mark.parametrize("output_value", ["sentence_embedding", None])
+def test_encode_truncate(
+    sentences: str | list[str],
+    convert_to_tensor: bool,
+    convert_to_numpy: bool,
+    normalize_embeddings: bool,
+    output_value: Literal["sentence_embedding"] | None,
+) -> None:
+    model = SentenceTransformer("sentence-transformers-testing/stsb-bert-tiny-safetensors")
+    embeddings_full_unnormalized: torch.Tensor = model.encode(
+        sentences, convert_to_numpy=False, convert_to_tensor=True
+    )  # These are raw embeddings which serve as the reference to test against
+
+    def test(model: SentenceTransformer, expected_dim: int):
+        outputs = model.encode(
+            sentences,
+            output_value=output_value,
+            convert_to_tensor=convert_to_tensor,
+            convert_to_numpy=convert_to_numpy,
+            normalize_embeddings=normalize_embeddings,
+        )
+
+        # Extract the sentence embeddings out of outputs
+        if output_value is None:
+            # We get the whole plate
+            if not isinstance(outputs, List):
+                embeddings = outputs["sentence_embedding"]
+            else:
+                outputs = cast(List[Dict[str, torch.Tensor]], outputs)
+                embeddings = [out_features["sentence_embedding"] for out_features in outputs]
+        else:
+            embeddings = outputs
+
+        # Test shape
+        if isinstance(embeddings, list):  # list of tensors
+            embeddings_shape = (len(embeddings), embeddings[0].shape[-1])
+        else:
+            embeddings_shape = embeddings.shape
+        expected_shape = (expected_dim,) if isinstance(sentences, str) else (len(sentences), expected_dim)
+        assert embeddings_shape == expected_shape
+        assert model.get_sentence_embedding_dimension() == expected_dim
+
+        # Convert embeddings to a torch Tensor for ease of testing
+        if isinstance(embeddings, list):
+            embeddings = torch.stack(embeddings)
+        elif isinstance(embeddings, np.ndarray):
+            embeddings = torch.from_numpy(embeddings).to(embeddings_full_unnormalized.device)
+            # On a non-cpu device, the device of torch.from_numpy(embeddings) is always CPU
+
+        # Test content
+        if normalize_embeddings:
+            if output_value is None:
+                # Currently, normalization is not performed; it's the raw output of the forward pass
+                pass
+            else:
+                normalize = partial(torch.nn.functional.normalize, p=2, dim=-1)
+                assert torch.allclose(
+                    embeddings,
+                    normalize(util.truncate_embeddings(embeddings_full_unnormalized, expected_dim)),
+                )
+        else:
+            assert torch.allclose(embeddings, util.truncate_embeddings(embeddings_full_unnormalized, expected_dim))
+
+    # Test init w/o setting truncate_dim (it's None)
+    original_output_dim: int = model.get_sentence_embedding_dimension()
+    test(model, expected_dim=original_output_dim)
+
+    # Test init w/ a set truncate_dim
+    truncate_dim = int(original_output_dim / 4)
+    model = SentenceTransformer("sentence-transformers-testing/stsb-bert-tiny-safetensors", truncate_dim=truncate_dim)
+    test(model, expected_dim=truncate_dim)
+
+    # Test setting the attribute after init to a greater dimension
+    new_truncate_dim = 2 * truncate_dim
+    model.truncate_dim = new_truncate_dim
+    test(model, expected_dim=new_truncate_dim)
+
+    # Test context manager
+    final_truncate_dim = int(original_output_dim / 8)
+    with model.truncate_sentence_embeddings(final_truncate_dim):
+        test(model, expected_dim=final_truncate_dim)
+    test(model, expected_dim=new_truncate_dim)  # b/c we've exited the context
+
+    # Test w/ an ouptut_dim that's larger than the original_output_dim. No truncation ends up happening
+    model.truncate_dim = 2 * original_output_dim
+    test(model, expected_dim=original_output_dim)
+
+
+@pytest.mark.parametrize("similarity_fn_name", SimilarityFunction.possible_values())
+def test_similarity_score(stsb_bert_tiny_model_reused: SentenceTransformer, similarity_fn_name: str) -> None:
+    model = stsb_bert_tiny_model_reused
+    model.similarity_fn_name = similarity_fn_name
+    sentences = [
+        "The weather is so nice!",
+        "It's so sunny outside.",
+        "He's driving to the movie theater.",
+        "She's going to the cinema.",
+    ]
+    embeddings = model.encode(sentences, normalize_embeddings=True)
+    scores = model.similarity(embeddings, embeddings)
+    assert scores.shape == (len(sentences), len(sentences))
+    if similarity_fn_name in ("cosine", "dot"):
+        expected = np.ones(4, dtype=float)
+    else:
+        expected = np.zeros(4, dtype=float)
+    np.testing.assert_almost_equal(np.diag(scores), expected, decimal=4)
+    assert scores[1][0] > scores[2][0]
+    assert scores[1][0] > scores[3][0]
+    assert scores[2][3] > scores[2][0]
+    assert scores[2][3] > scores[2][1]
+
+    pairwise_scores = model.similarity_pairwise(embeddings[::2], embeddings[1::2])
+    assert pairwise_scores.shape == (len(sentences) // 2,)
+    if similarity_fn_name in ("cosine", "dot"):
+        assert (pairwise_scores > 0.5).all()
+
+
+def test_similarity_score_save(stsb_bert_tiny_model: SentenceTransformer) -> None:
+    model = stsb_bert_tiny_model
+    embeddings = model.encode(["Sentence 1", "Sentence 2"])
+    assert model.similarity_fn_name is None
+    cosine_scores = model.similarity(embeddings, embeddings)
+    # Using 'similarity' methods sets the default similarity function to 'cosine'
+    assert model.similarity_fn_name == "cosine"
+
+    model.similarity_fn_name = "euclidean"
+    with tempfile.TemporaryDirectory() as tmp_folder:
+        model.save(tmp_folder)
+        loaded_model = SentenceTransformer(tmp_folder)
+    assert loaded_model.similarity_fn_name == "euclidean"
+    dot_scores = model.similarity(embeddings, embeddings)
+    assert np.not_equal(cosine_scores, dot_scores).all()
+
+
+def test_model_card_save_update_model_id(stsb_bert_tiny_model: SentenceTransformer) -> None:
+    model = stsb_bert_tiny_model
+    # Removing the saved model card will cause a fresh one to be generated when we save
+    model._model_card_text = ""
+    with tempfile.TemporaryDirectory() as tmp_folder:
+        model.save(tmp_folder)
+        with open(Path(tmp_folder) / "README.md", encoding="utf8") as f:
+            model_card_text = f.read()
+            assert 'model = SentenceTransformer("sentence_transformers_model_id"' in model_card_text
+
+        # When we reload this saved model and then re-save it, we want to override the 'sentence_transformers_model_id'
+        # if we have it set
+        loaded_model = SentenceTransformer(tmp_folder)
+
+    with tempfile.TemporaryDirectory() as tmp_folder:
+        loaded_model.save(tmp_folder, model_name="test_user/test_model")
+
+        with open(Path(tmp_folder) / "README.md", encoding="utf8") as f:
+            model_card_text = f.read()
+            assert 'model = SentenceTransformer("test_user/test_model"' in model_card_text
+
+
+def test_override_config_versions(stsb_bert_tiny_model: SentenceTransformer) -> None:
+    model = stsb_bert_tiny_model
+
+    assert model._model_config["__version__"]["sentence_transformers"] == "2.2.2"
+    with tempfile.TemporaryDirectory() as tmp_folder:
+        model.save(tmp_folder)
+        loaded_model = SentenceTransformer(tmp_folder)
+    # Verify that the version has now been updated when saving the model again
+    assert loaded_model._model_config["__version__"]["sentence_transformers"] != "2.2.2"
+
+
+@pytest.mark.parametrize(
+    "modules",
+    [
+        [
+            Transformer("sentence-transformers-testing/stsb-bert-tiny-safetensors"),
+            Pooling(128, "mean"),
+            Dense(128, 128),
+        ],
+        [Transformer("sentence-transformers-testing/stsb-bert-tiny-safetensors"), CNN(128, 128), Pooling(128, "mean")],
+        [
+            Transformer("sentence-transformers-testing/stsb-bert-tiny-safetensors"),
+            Pooling(128, "mean"),
+            LayerNorm(128),
+        ],
+        [
+            SentenceTransformer("sentence-transformers/average_word_embeddings_levy_dependency")[0],
+            LSTM(300, 128),
+            Pooling(128, "mean"),
+        ],
+        [
+            Transformer("sentence-transformers-testing/stsb-bert-tiny-safetensors"),
+            WeightedLayerPooling(128, num_hidden_layers=2, layer_start=1),
+            Pooling(128, "mean"),
+        ],
+        SentenceTransformer("sentence-transformers/average_word_embeddings_levy_dependency"),
+    ],
+)
+def test_safetensors(modules: list[nn.Module] | SentenceTransformer) -> None:
+    if isinstance(modules, SentenceTransformer):
+        model = modules
+    else:
+        # output_hidden_states must be True for WeightedLayerPooling
+        if isinstance(modules[1], WeightedLayerPooling):
+            modules[0].auto_model.config.output_hidden_states = True
+        model = SentenceTransformer(modules=modules)
+    original_embedding = model.encode("Hello, World!")
+
+    with tempfile.TemporaryDirectory() as tmp_folder:
+        model.save(tmp_folder)
+        # Ensure that we only have the safetensors file and no pytorch_model.bin
+        assert list(Path(tmp_folder).rglob("**/model.safetensors"))
+        assert not list(Path(tmp_folder).rglob("**/pytorch_model.bin"))
+
+        # Ensure that we can load the model again and get the same embeddings
+        loaded_model = SentenceTransformer(tmp_folder)
+        loaded_embedding = loaded_model.encode("Hello, World!")
+        assert np.allclose(original_embedding, loaded_embedding)
+
+
+def test_empty_encode(stsb_bert_tiny_model: SentenceTransformer) -> None:
+    model = stsb_bert_tiny_model
+    embeddings = model.encode([])
+    assert embeddings.shape == (0,)

@@ -8,12 +8,18 @@ Usage:
 python train_mlm.py model_name data/train_sentences.txt [data/dev_sentences.txt]
 """
 
-from transformers import AutoModelForMaskedLM, AutoTokenizer
-from transformers import DataCollatorForLanguageModeling, DataCollatorForWholeWordMask
-from transformers import Trainer, TrainingArguments
-import sys
 import gzip
+import sys
 from datetime import datetime
+
+from transformers import (
+    AutoModelForMaskedLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    DataCollatorForWholeWordMask,
+    Trainer,
+    TrainingArguments,
+)
 
 if len(sys.argv) < 3:
     print("Usage: python train_mlm.py model_name data/train_sentences.txt [data/dev_sentences.txt]")
@@ -43,7 +49,7 @@ print("Save checkpoints to:", output_dir)
 train_sentences = []
 train_path = sys.argv[2]
 with gzip.open(train_path, "rt", encoding="utf8") if train_path.endswith(".gz") else open(
-    train_path, "r", encoding="utf8"
+    train_path, encoding="utf8"
 ) as fIn:
     for line in fIn:
         line = line.strip()
@@ -56,7 +62,7 @@ dev_sentences = []
 if len(sys.argv) >= 4:
     dev_path = sys.argv[3]
     with gzip.open(dev_path, "rt", encoding="utf8") if dev_path.endswith(".gz") else open(
-        dev_path, "r", encoding="utf8"
+        dev_path, encoding="utf8"
     ) as fIn:
         for line in fIn:
             line = line.strip()

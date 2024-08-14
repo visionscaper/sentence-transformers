@@ -1,13 +1,14 @@
-import torch
-from torch import Tensor
-from torch import nn
-from typing import List, Dict
-import os
+from __future__ import annotations
+
 import json
 import logging
-import numpy as np
-from .tokenizer import WhitespaceTokenizer
+import os
+from typing import Literal
 
+import torch
+from torch import Tensor, nn
+
+from .tokenizer import WhitespaceTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +21,12 @@ class BoW(nn.Module):
 
     def __init__(
         self,
-        vocab: List[str],
-        word_weights: Dict[str, float] = {},
+        vocab: list[str],
+        word_weights: dict[str, float] = {},
         unknown_word_weight: float = 1,
         cumulative_term_frequency: bool = True,
     ):
-        super(BoW, self).__init__()
+        super().__init__()
         vocab = list(set(vocab))  # Ensure vocab is unique
         self.config_keys = ["vocab", "word_weights", "unknown_word_weight", "cumulative_term_frequency"]
         self.vocab = vocab
@@ -47,30 +48,30 @@ class BoW(nn.Module):
             self.weights.append(weight)
 
         logger.info(
-            "{} out of {} words without a weighting value. Set weight to {}".format(
-                num_unknown_words, len(vocab), unknown_word_weight
-            )
+            f"{num_unknown_words} out of {len(vocab)} words without a weighting value. Set weight to {unknown_word_weight}"
         )
 
         self.tokenizer = WhitespaceTokenizer(vocab, stop_words=set(), do_lower_case=False)
         self.sentence_embedding_dimension = len(vocab)
 
-    def forward(self, features: Dict[str, Tensor]):
+    def forward(self, features: dict[str, Tensor]):
         # Nothing to do, everything is done in get_sentence_features
         return features
 
-    def tokenize(self, texts: List[str]) -> List[int]:
-        tokenized = [self.tokenizer.tokenize(text) for text in texts]
+    def tokenize(self, texts: list[str], **kwargs) -> list[int]:
+        tokenized = [self.tokenizer.tokenize(text, **kwargs) for text in texts]
         return self.get_sentence_features(tokenized)
 
     def get_sentence_embedding_dimension(self):
         return self.sentence_embedding_dimension
 
-    def get_sentence_features(self, tokenized_texts: List[List[int]], pad_seq_length: int = 0):
+    def get_sentence_features(
+        self, tokenized_texts: list[list[int]], pad_seq_length: int = 0
+    ) -> dict[Literal["sentence_embedding"], torch.Tensor]:
         vectors = []
 
         for tokens in tokenized_texts:
-            vector = np.zeros(self.get_sentence_embedding_dimension(), dtype=np.float32)
+            vector = torch.zeros(self.get_sentence_embedding_dimension(), dtype=torch.float32)
             for token in tokens:
                 if self.cumulative_term_frequency:
                     vector[token] += self.weights[token]
@@ -78,7 +79,7 @@ class BoW(nn.Module):
                     vector[token] = self.weights[token]
             vectors.append(vector)
 
-        return {"sentence_embedding": torch.tensor(vectors, dtype=torch.float)}
+        return {"sentence_embedding": torch.stack(vectors)}
 
     def get_config_dict(self):
         return {key: self.__dict__[key] for key in self.config_keys}

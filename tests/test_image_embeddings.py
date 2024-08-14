@@ -2,11 +2,13 @@
 Compute image embeddings
 """
 
+from __future__ import annotations
+
 import os
 
 from PIL import Image
 
-from sentence_transformers import util, SentenceTransformer
+from sentence_transformers import SentenceTransformer, util
 
 
 def test_simple_encode(clip_vit_b_32_model: SentenceTransformer) -> None:

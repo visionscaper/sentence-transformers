@@ -13,13 +13,15 @@ This script requires that you have FAISS installed:
 https://github.com/facebookresearch/faiss
 """
 
-from sentence_transformers import SentenceTransformer, models
-import numpy as np
-from bitext_mining_utils import score_candidates, kNN, file_open
 import gzip
-import tqdm
-from sklearn.decomposition import PCA
+
+import numpy as np
 import torch
+import tqdm
+from bitext_mining_utils import file_open, kNN, score_candidates
+from sklearn.decomposition import PCA
+
+from sentence_transformers import SentenceTransformer, models
 
 # Model we want to use for bitext mining. LaBSE achieves state-of-the-art performance
 model_name = "LaBSE"
@@ -175,4 +177,4 @@ with gzip.open("parallel-sentences-out.tsv.gz", "wt", encoding="utf8") as fOut:
             )
             sentences_written += 1
 
-print("Done. {} sentences written".format(sentences_written))
+print(f"Done. {sentences_written} sentences written")

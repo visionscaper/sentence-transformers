@@ -1,17 +1,17 @@
-from . import InputExample
+from __future__ import annotations
+
 import gzip
 
+from . import InputExample
 
-class PairedFilesReader(object):
-    """
-    Reads in the a Pair Dataset, split in two files
-    """
+
+class PairedFilesReader:
+    """Reads in the a Pair Dataset, split in two files"""
 
     def __init__(self, filepaths):
         self.filepaths = filepaths
 
     def get_examples(self, max_examples=0):
-        """ """
         fIns = []
         for filepath in self.filepaths:
             fIn = (

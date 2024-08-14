@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 from contextlib import nullcontext
-from typing import List
+
 import pytest
-from sentence_transformers import SentenceTransformer, InputExample, losses
-import tqdm
-from transformers import set_seed
 import torch
+import tqdm
 from torch.optim import Adam
+from transformers import set_seed
+
+from sentence_transformers import InputExample, SentenceTransformer, losses
 
 
 @pytest.mark.parametrize(
@@ -77,8 +80,8 @@ from torch.optim import Adam
     ],
 )
 def test_cmnrl_same_grad(
-    train_samples_mnrl: List[InputExample],
-    train_samples_cmnrl: List[InputExample],
+    train_samples_mnrl: list[InputExample],
+    train_samples_cmnrl: list[InputExample],
     same_grad: bool,
     scaler: float,
     precision: float,

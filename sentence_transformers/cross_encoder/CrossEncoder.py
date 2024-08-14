@@ -1,23 +1,29 @@
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
-import numpy as np
+from __future__ import annotations
+
 import logging
 import os
-from typing import Dict, Type, Callable, List, Optional
+from functools import wraps
+from typing import Callable, Literal, overload
+
+import numpy as np
 import torch
-from torch import nn
+from torch import Tensor, nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm.autonotebook import tqdm, trange
-from transformers import is_torch_npu_available
-from .. import SentenceTransformer, util
-from ..evaluation import SentenceEvaluator
-from ..util import get_device_name
+from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, is_torch_npu_available
+from transformers.tokenization_utils_base import BatchEncoding
+from transformers.utils import PushToHubMixin
 
+from sentence_transformers.evaluation.SentenceEvaluator import SentenceEvaluator
+from sentence_transformers.readers import InputExample
+from sentence_transformers.SentenceTransformer import SentenceTransformer
+from sentence_transformers.util import fullname, get_device_name, import_from_string
 
 logger = logging.getLogger(__name__)
 
 
-class CrossEncoder:
+class CrossEncoder(PushToHubMixin):
     """
     A CrossEncoder takes exactly two sentences / texts as input and either predicts
     a score or label for this sentence pair. It can for example predict the similarity of the sentence pair
@@ -25,22 +31,28 @@ class CrossEncoder:
 
     It does not yield a sentence embedding and does not work for individual sentences.
 
-    :param model_name: A model name from Hugging Face Hub that can be loaded with AutoModel, or a path to a local
-        model. We provide several pre-trained CrossEncoder models that can be used for common tasks.
-    :param num_labels: Number of labels of the classifier. If 1, the CrossEncoder is a regression model that
-        outputs a continuous score 0...1. If > 1, it output several scores that can be soft-maxed to get
-        probability scores for the different classes.
-    :param max_length: Max length for input sequences. Longer sequences will be truncated. If None, max
-        length of the model will be used
-    :param device: Device that should be used for the model. If None, it will use CUDA if available.
-    :param tokenizer_args: Arguments passed to AutoTokenizer
-    :param automodel_args: Arguments passed to AutoModelForSequenceClassification
-    :param revision: The specific model version to use. It can be a branch name, a tag name, or a commit id,
-        for a stored model on Hugging Face.
-    :param default_activation_function: Callable (like nn.Sigmoid) about the default activation function that
-        should be used on-top of model.predict(). If None. nn.Sigmoid() will be used if num_labels=1,
-        else nn.Identity()
-    :param classifier_dropout: The dropout ratio for the classification head.
+    Args:
+        model_name (str): A model name from Hugging Face Hub that can be loaded with AutoModel, or a path to a local
+            model. We provide several pre-trained CrossEncoder models that can be used for common tasks.
+        num_labels (int, optional): Number of labels of the classifier. If 1, the CrossEncoder is a regression model that
+            outputs a continuous score 0...1. If > 1, it output several scores that can be soft-maxed to get
+            probability scores for the different classes. Defaults to None.
+        max_length (int, optional): Max length for input sequences. Longer sequences will be truncated. If None, max
+            length of the model will be used. Defaults to None.
+        device (str, optional): Device that should be used for the model. If None, it will use CUDA if available.
+            Defaults to None.
+        tokenizer_args (Dict, optional): Arguments passed to AutoTokenizer. Defaults to None.
+        automodel_args (Dict, optional): Arguments passed to AutoModelForSequenceClassification. Defaults to None.
+        trust_remote_code (bool, optional): Whether or not to allow for custom models defined on the Hub in their own modeling files.
+            This option should only be set to True for repositories you trust and in which you have read the code, as it
+            will execute code present on the Hub on your local machine. Defaults to False.
+        revision (Optional[str], optional): The specific model version to use. It can be a branch name, a tag name, or a commit id,
+            for a stored model on Hugging Face. Defaults to None.
+        local_files_only (bool, optional): If `True`, avoid downloading the model. Defaults to False.
+        default_activation_function (Callable, optional): Callable (like nn.Sigmoid) about the default activation function that
+            should be used on-top of model.predict(). If None. nn.Sigmoid() will be used if num_labels=1,
+            else nn.Identity(). Defaults to None.
+        classifier_dropout (float, optional): The dropout ratio for the classification head. Defaults to None.
     """
 
     def __init__(
@@ -48,14 +60,22 @@ class CrossEncoder:
         model_name: str,
         num_labels: int = None,
         max_length: int = None,
-        device: str = None,
-        tokenizer_args: Dict = {},
-        automodel_args: Dict = {},
-        revision: Optional[str] = None,
+        device: str | None = None,
+        tokenizer_args: dict = None,
+        automodel_args: dict = None,
+        trust_remote_code: bool = False,
+        revision: str | None = None,
+        local_files_only: bool = False,
         default_activation_function=None,
         classifier_dropout: float = None,
-    ):
-        self.config = AutoConfig.from_pretrained(model_name, revision=revision)
+    ) -> None:
+        if tokenizer_args is None:
+            tokenizer_args = {}
+        if automodel_args is None:
+            automodel_args = {}
+        self.config = AutoConfig.from_pretrained(
+            model_name, trust_remote_code=trust_remote_code, revision=revision, local_files_only=local_files_only
+        )
         classifier_trained = True
         if self.config.architectures is not None:
             classifier_trained = any(
@@ -70,38 +90,44 @@ class CrossEncoder:
 
         if num_labels is not None:
             self.config.num_labels = num_labels
-
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_name, config=self.config, revision=revision, **automodel_args
+            model_name,
+            config=self.config,
+            revision=revision,
+            trust_remote_code=trust_remote_code,
+            local_files_only=local_files_only,
+            **automodel_args,
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision, **tokenizer_args)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=revision,
+            local_files_only=local_files_only,
+            trust_remote_code=trust_remote_code,
+            **tokenizer_args,
+        )
         self.max_length = max_length
 
         if device is None:
             device = get_device_name()
-            logger.info("Use pytorch device: {}".format(device))
+            logger.info(f"Use pytorch device: {device}")
 
         self._target_device = torch.device(device)
 
         if default_activation_function is not None:
             self.default_activation_function = default_activation_function
             try:
-                self.config.sbert_ce_default_activation_function = util.fullname(self.default_activation_function)
+                self.config.sbert_ce_default_activation_function = fullname(self.default_activation_function)
             except Exception as e:
-                logger.warning(
-                    "Was not able to update config about the default_activation_function: {}".format(str(e))
-                )
+                logger.warning(f"Was not able to update config about the default_activation_function: {str(e)}")
         elif (
             hasattr(self.config, "sbert_ce_default_activation_function")
             and self.config.sbert_ce_default_activation_function is not None
         ):
-            self.default_activation_function = util.import_from_string(
-                self.config.sbert_ce_default_activation_function
-            )()
+            self.default_activation_function = import_from_string(self.config.sbert_ce_default_activation_function)()
         else:
             self.default_activation_function = nn.Sigmoid() if self.config.num_labels == 1 else nn.Identity()
 
-    def smart_batching_collate(self, batch):
+    def smart_batching_collate(self, batch: list[InputExample]) -> tuple[BatchEncoding, Tensor]:
         texts = [[] for _ in range(len(batch[0].texts))]
         labels = []
 
@@ -123,7 +149,7 @@ class CrossEncoder:
 
         return tokenized, labels
 
-    def smart_batching_collate_text_only(self, batch):
+    def smart_batching_collate_text_only(self, batch: list[InputExample]) -> BatchEncoding:
         texts = [[] for _ in range(len(batch[0]))]
 
         for example in batch:
@@ -148,8 +174,8 @@ class CrossEncoder:
         activation_fct=nn.Identity(),
         scheduler: str = "WarmupLinear",
         warmup_steps: int = 10000,
-        optimizer_class: Type[Optimizer] = torch.optim.AdamW,
-        optimizer_params: Dict[str, object] = {"lr": 2e-5},
+        optimizer_class: type[Optimizer] = torch.optim.AdamW,
+        optimizer_params: dict[str, object] = {"lr": 2e-5},
         weight_decay: float = 0.01,
         evaluation_steps: int = 0,
         output_path: str = None,
@@ -158,32 +184,33 @@ class CrossEncoder:
         use_amp: bool = False,
         callback: Callable[[float, int, int], None] = None,
         show_progress_bar: bool = True,
-    ):
+    ) -> None:
         """
         Train the model with the given training objective
         Each training objective is sampled in turn for one batch.
         We sample only as many batches from each objective as there are in the smallest one
         to make sure of equal training with each dataset.
 
-        :param train_dataloader: DataLoader with training InputExamples
-        :param evaluator: An evaluator (sentence_transformers.evaluation) evaluates the model performance during training on held-out dev data. It is used to determine the best model that is saved to disc.
-        :param epochs: Number of epochs for training
-        :param loss_fct: Which loss function to use for training. If None, will use nn.BCEWithLogitsLoss() if self.config.num_labels == 1 else nn.CrossEntropyLoss()
-        :param activation_fct: Activation function applied on top of logits output of model.
-        :param scheduler: Learning rate scheduler. Available schedulers: constantlr, warmupconstant, warmuplinear, warmupcosine, warmupcosinewithhardrestarts
-        :param warmup_steps: Behavior depends on the scheduler. For WarmupLinear (default), the learning rate is increased from o up to the maximal learning rate. After these many training steps, the learning rate is decreased linearly back to zero.
-        :param optimizer_class: Optimizer
-        :param optimizer_params: Optimizer parameters
-        :param weight_decay: Weight decay for model parameters
-        :param evaluation_steps: If > 0, evaluate the model using evaluator after each number of training steps
-        :param output_path: Storage path for the model and evaluation files
-        :param save_best_model: If true, the best model (according to evaluator) is stored at output_path
-        :param max_grad_norm: Used for gradient normalization.
-        :param use_amp: Use Automatic Mixed Precision (AMP). Only for Pytorch >= 1.6.0
-        :param callback: Callback function that is invoked after each evaluation.
+        Args:
+            train_dataloader (DataLoader): DataLoader with training InputExamples
+            evaluator (SentenceEvaluator, optional): An evaluator (sentence_transformers.evaluation) evaluates the model performance during training on held-out dev data. It is used to determine the best model that is saved to disc. Defaults to None.
+            epochs (int, optional): Number of epochs for training. Defaults to 1.
+            loss_fct: Which loss function to use for training. If None, will use nn.BCEWithLogitsLoss() if self.config.num_labels == 1 else nn.CrossEntropyLoss(). Defaults to None.
+            activation_fct: Activation function applied on top of logits output of model.
+            scheduler (str, optional): Learning rate scheduler. Available schedulers: constantlr, warmupconstant, warmuplinear, warmupcosine, warmupcosinewithhardrestarts. Defaults to "WarmupLinear".
+            warmup_steps (int, optional): Behavior depends on the scheduler. For WarmupLinear (default), the learning rate is increased from o up to the maximal learning rate. After these many training steps, the learning rate is decreased linearly back to zero. Defaults to 10000.
+            optimizer_class (Type[Optimizer], optional): Optimizer. Defaults to torch.optim.AdamW.
+            optimizer_params (Dict[str, object], optional): Optimizer parameters. Defaults to {"lr": 2e-5}.
+            weight_decay (float, optional): Weight decay for model parameters. Defaults to 0.01.
+            evaluation_steps (int, optional): If > 0, evaluate the model using evaluator after each number of training steps. Defaults to 0.
+            output_path (str, optional): Storage path for the model and evaluation files. Defaults to None.
+            save_best_model (bool, optional): If true, the best model (according to evaluator) is stored at output_path. Defaults to True.
+            max_grad_norm (float, optional): Used for gradient normalization. Defaults to 1.
+            use_amp (bool, optional): Use Automatic Mixed Precision (AMP). Only for Pytorch >= 1.6.0. Defaults to False.
+            callback (Callable[[float, int, int], None], optional): Callback function that is invoked after each evaluation.
                 It must accept the following three parameters in this order:
-                `score`, `epoch`, `steps`
-        :param show_progress_bar: If True, output a tqdm progress bar
+                `score`, `epoch`, `steps`. Defaults to None.
+            show_progress_bar (bool, optional): If True, output a tqdm progress bar. Defaults to True.
         """
         train_dataloader.collate_fn = self.smart_batching_collate
 
@@ -275,29 +302,101 @@ class CrossEncoder:
             if evaluator is not None:
                 self._eval_during_training(evaluator, output_path, save_best_model, epoch, -1, callback)
 
+    @overload
     def predict(
         self,
-        sentences: List[List[str]],
+        sentences: tuple[str, str] | list[str],
+        batch_size: int = ...,
+        show_progress_bar: bool | None = ...,
+        num_workers: int = ...,
+        activation_fct: Callable | None = ...,
+        apply_softmax: bool | None = ...,
+        convert_to_numpy: Literal[False] = ...,
+        convert_to_tensor: Literal[False] = ...,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def predict(
+        self,
+        sentences: list[tuple[str, str]] | list[list[str]] | tuple[str, str] | list[str],
+        batch_size: int = ...,
+        show_progress_bar: bool | None = ...,
+        num_workers: int = ...,
+        activation_fct: Callable | None = ...,
+        apply_softmax: bool | None = ...,
+        convert_to_numpy: Literal[True] = True,
+        convert_to_tensor: Literal[False] = False,
+    ) -> np.ndarray: ...
+
+    @overload
+    def predict(
+        self,
+        sentences: list[tuple[str, str]] | list[list[str]] | tuple[str, str] | list[str],
+        batch_size: int = ...,
+        show_progress_bar: bool | None = ...,
+        num_workers: int = ...,
+        activation_fct: Callable | None = ...,
+        apply_softmax: bool | None = ...,
+        convert_to_numpy: bool = ...,
+        convert_to_tensor: Literal[True] = ...,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def predict(
+        self,
+        sentences: list[tuple[str, str]] | list[list[str]],
+        batch_size: int = ...,
+        show_progress_bar: bool | None = ...,
+        num_workers: int = ...,
+        activation_fct: Callable | None = ...,
+        apply_softmax: bool | None = ...,
+        convert_to_numpy: Literal[False] = ...,
+        convert_to_tensor: Literal[False] = ...,
+    ) -> list[torch.Tensor]: ...
+
+    def predict(
+        self,
+        sentences: list[tuple[str, str]] | list[list[str]] | tuple[str, str] | list[str],
         batch_size: int = 32,
-        show_progress_bar: bool = None,
+        show_progress_bar: bool | None = None,
         num_workers: int = 0,
-        activation_fct=None,
-        apply_softmax=False,
+        activation_fct: Callable | None = None,
+        apply_softmax: bool | None = False,
         convert_to_numpy: bool = True,
         convert_to_tensor: bool = False,
-    ):
+    ) -> list[torch.Tensor] | np.ndarray | torch.Tensor:
         """
-        Performs predicts with the CrossEncoder on the given sentence pairs.
+        Performs predictions with the CrossEncoder on the given sentence pairs.
 
-        :param sentences: A list of sentence pairs [[Sent1, Sent2], [Sent3, Sent4]]
-        :param batch_size: Batch size for encoding
-        :param show_progress_bar: Output progress bar
-        :param num_workers: Number of workers for tokenization
-        :param activation_fct: Activation function applied on the logits output of the CrossEncoder. If None, nn.Sigmoid() will be used if num_labels=1, else nn.Identity
-        :param convert_to_numpy: Convert the output to a numpy matrix.
-        :param apply_softmax: If there are more than 2 dimensions and apply_softmax=True, applies softmax on the logits output
-        :param convert_to_tensor: Convert the output to a tensor.
-        :return: Predictions for the passed sentence pairs
+        Args:
+            sentences (Union[List[Tuple[str, str]], Tuple[str, str]]): A list of sentence pairs [(Sent1, Sent2), (Sent3, Sent4)]
+                or one sentence pair (Sent1, Sent2).
+            batch_size (int, optional): Batch size for encoding. Defaults to 32.
+            show_progress_bar (bool, optional): Output progress bar. Defaults to None.
+            num_workers (int, optional): Number of workers for tokenization. Defaults to 0.
+            activation_fct (callable, optional): Activation function applied on the logits output of the CrossEncoder.
+                If None, nn.Sigmoid() will be used if num_labels=1, else nn.Identity. Defaults to None.
+            convert_to_numpy (bool, optional): Convert the output to a numpy matrix. Defaults to True.
+            apply_softmax (bool, optional): If there are more than 2 dimensions and apply_softmax=True,
+                applies softmax on the logits output. Defaults to False.
+            convert_to_tensor (bool, optional): Convert the output to a tensor. Defaults to False.
+
+        Returns:
+            Union[List[float], np.ndarray, torch.Tensor]: Predictions for the passed sentence pairs.
+            The return type depends on the `convert_to_numpy` and `convert_to_tensor` parameters.
+            If `convert_to_tensor` is True, the output will be a torch.Tensor.
+            If `convert_to_numpy` is True, the output will be a numpy.ndarray.
+            Otherwise, the output will be a list of float values.
+
+        Examples:
+            ::
+
+                from sentence_transformers import CrossEncoder
+
+                model = CrossEncoder("cross-encoder/stsb-roberta-base")
+                sentences = [["I love cats", "Cats are amazing"], ["I prefer dogs", "Dogs are loyal"]]
+                model.predict(sentences)
+                # => array([0.6912767, 0.4303499], dtype=float32)
         """
         input_was_string = False
         if isinstance(sentences[0], str):  # Cast an individual sentence to a list with length 1
@@ -342,7 +441,7 @@ class CrossEncoder:
         if convert_to_tensor:
             pred_scores = torch.stack(pred_scores)
         elif convert_to_numpy:
-            pred_scores = np.asarray([score.cpu().detach().numpy() for score in pred_scores])
+            pred_scores = np.asarray([score.cpu().detach().float().numpy() for score in pred_scores])
 
         if input_was_string:
             pred_scores = pred_scores[0]
@@ -352,8 +451,8 @@ class CrossEncoder:
     def rank(
         self,
         query: str,
-        documents: List[str],
-        top_k: Optional[int] = None,
+        documents: list[str],
+        top_k: int | None = None,
         return_documents: bool = False,
         batch_size: int = 32,
         show_progress_bar: bool = None,
@@ -362,9 +461,25 @@ class CrossEncoder:
         apply_softmax=False,
         convert_to_numpy: bool = True,
         convert_to_tensor: bool = False,
-    ) -> List[Dict]:
+    ) -> list[dict[Literal["corpus_id", "score", "text"], int | float | str]]:
         """
         Performs ranking with the CrossEncoder on the given query and documents. Returns a sorted list with the document indices and scores.
+
+        Args:
+            query (str): A single query.
+            documents (List[str]): A list of documents.
+            top_k (Optional[int], optional): Return the top-k documents. If None, all documents are returned. Defaults to None.
+            return_documents (bool, optional): If True, also returns the documents. If False, only returns the indices and scores. Defaults to False.
+            batch_size (int, optional): Batch size for encoding. Defaults to 32.
+            show_progress_bar (bool, optional): Output progress bar. Defaults to None.
+            num_workers (int, optional): Number of workers for tokenization. Defaults to 0.
+            activation_fct ([type], optional): Activation function applied on the logits output of the CrossEncoder. If None, nn.Sigmoid() will be used if num_labels=1, else nn.Identity. Defaults to None.
+            convert_to_numpy (bool, optional): Convert the output to a numpy matrix. Defaults to True.
+            apply_softmax (bool, optional): If there are more than 2 dimensions and apply_softmax=True, applies softmax on the logits output. Defaults to False.
+            convert_to_tensor (bool, optional): Convert the output to a tensor. Defaults to False.
+
+        Returns:
+            List[Dict[Literal["corpus_id", "score", "text"], Union[int, float, str]]]: A sorted list with the "corpus_id", "score", and optionally "text" of the documents.
 
         Example:
             ::
@@ -401,19 +516,6 @@ class CrossEncoder:
                 {'corpus_id': 4,
                 'score': -5.082967,
                 'text': "The 'Harry Potter' series, which consists of seven fantasy novels written by British author J.K. Rowling, is among the most popular and critically acclaimed books of the modern era."}]
-
-        :param query: A single query
-        :param documents: A list of documents
-        :param top_k: Return the top-k documents. If None, all documents are returned.
-        :param return_documents: If True, also returns the documents. If False, only returns the indices and scores.
-        :param batch_size: Batch size for encoding
-        :param show_progress_bar: Output progress bar
-        :param num_workers: Number of workers for tokenization
-        :param activation_fct: Activation function applied on the logits output of the CrossEncoder. If None, nn.Sigmoid() will be used if num_labels=1, else nn.Identity
-        :param convert_to_numpy: Convert the output to a numpy matrix.
-        :param apply_softmax: If there are more than 2 dimensions and apply_softmax=True, applies softmax on the logits output
-        :param convert_to_tensor: Convert the output to a tensor.
-        :return: A sorted list with the document indices and scores, and optionally also documents.
         """
         query_doc_pairs = [[query, doc] for doc in documents]
         scores = self.predict(
@@ -437,7 +539,7 @@ class CrossEncoder:
         results = sorted(results, key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def _eval_during_training(self, evaluator, output_path, save_best_model, epoch, steps, callback):
+    def _eval_during_training(self, evaluator, output_path, save_best_model, epoch, steps, callback) -> None:
         """Runs evaluation during the training"""
         if evaluator is not None:
             score = evaluator(self, output_path=output_path, epoch=epoch, steps=steps)
@@ -448,19 +550,45 @@ class CrossEncoder:
                 if save_best_model:
                     self.save(output_path)
 
-    def save(self, path: str, safe_serialization: bool = True) -> None:
+    def save(self, path: str, *, safe_serialization: bool = True, **kwargs) -> None:
         """
-        Saves all model and tokenizer to path
+        Saves the model and tokenizer to path; identical to `save_pretrained`
         """
         if path is None:
             return
 
-        logger.info("Save model to {}".format(path))
-        self.model.save_pretrained(path, safe_serialization=safe_serialization)
-        self.tokenizer.save_pretrained(path)
+        logger.info(f"Save model to {path}")
+        self.model.save_pretrained(path, safe_serialization=safe_serialization, **kwargs)
+        self.tokenizer.save_pretrained(path, **kwargs)
 
-    def save_pretrained(self, path: str) -> None:
+    def save_pretrained(self, path: str, *, safe_serialization: bool = True, **kwargs) -> None:
         """
-        Same function as save
+        Saves the model and tokenizer to path; identical to `save`
         """
-        return self.save(path)
+        return self.save(path, safe_serialization=safe_serialization, **kwargs)
+
+    @wraps(PushToHubMixin.push_to_hub)
+    def push_to_hub(
+        self,
+        repo_id: str,
+        *,
+        commit_message: str | None = None,
+        private: bool | None = None,
+        safe_serialization: bool = True,
+        tags: list[str] | None = None,
+        **kwargs,
+    ) -> str:
+        if isinstance(tags, str):
+            tags = [tags]
+        elif tags is None:
+            tags = []
+        if "cross-encoder" not in tags:
+            tags.insert(0, "cross-encoder")
+        return super().push_to_hub(
+            repo_id=repo_id,
+            safe_serialization=safe_serialization,
+            commit_message=commit_message,
+            private=private,
+            tags=tags,
+            **kwargs,
+        )

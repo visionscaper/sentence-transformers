@@ -1,121 +1,246 @@
-import functools
-import requests
-from torch import Tensor, device
-from typing import List, Callable, Literal
-from tqdm.autonotebook import tqdm
-import sys
-import importlib
-import os
-import torch
-import numpy as np
-import queue
-import logging
-from typing import Dict, Optional, Union
+from __future__ import annotations
 
-from transformers import is_torch_npu_available
-from huggingface_hub import snapshot_download, hf_hub_download
+import functools
 import heapq
+import importlib
+import logging
+import os
+import queue
+import random
+import sys
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any, Callable, Literal, overload
+
+import numpy as np
+import requests
+import torch
+from huggingface_hub import hf_hub_download, snapshot_download
+from torch import Tensor, device
+from tqdm import trange
+from tqdm.autonotebook import tqdm
+from transformers import is_torch_npu_available
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from datasets import Dataset
+
+    from sentence_transformers.cross_encoder.CrossEncoder import CrossEncoder
+    from sentence_transformers.SentenceTransformer import SentenceTransformer
+
+
+def _convert_to_tensor(a: list | np.ndarray | Tensor) -> Tensor:
+    """
+    Converts the input `a` to a PyTorch tensor if it is not already a tensor.
+
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The input array or tensor.
+
+    Returns:
+        Tensor: The converted tensor.
+    """
+    if not isinstance(a, Tensor):
+        a = torch.tensor(a)
+    return a
+
+
+def _convert_to_batch(a: Tensor) -> Tensor:
+    """
+    If the tensor `a` is 1-dimensional, it is unsqueezed to add a batch dimension.
+
+    Args:
+        a (Tensor): The input tensor.
+
+    Returns:
+        Tensor: The tensor with a batch dimension.
+    """
+    if a.dim() == 1:
+        a = a.unsqueeze(0)
+    return a
+
+
+def _convert_to_batch_tensor(a: list | np.ndarray | Tensor) -> Tensor:
+    """
+    Converts the input data to a tensor with a batch dimension.
+
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The input data to be converted.
+
+    Returns:
+        Tensor: The converted tensor with a batch dimension.
+    """
+    a = _convert_to_tensor(a)
+    a = _convert_to_batch(a)
+    return a
 
 
 def pytorch_cos_sim(a: Tensor, b: Tensor) -> Tensor:
     """
-    Computes the cosine similarity cos_sim(a[i], b[j]) for all i and j.
+    Computes the cosine similarity between two tensors.
 
-    :return: Matrix with res[i][j]  = cos_sim(a[i], b[j])
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Matrix with res[i][j] = cos_sim(a[i], b[j])
     """
     return cos_sim(a, b)
 
 
-def cos_sim(a: Tensor, b: Tensor) -> Tensor:
+def cos_sim(a: list | np.ndarray | Tensor, b: list | np.ndarray | Tensor) -> Tensor:
     """
-    Computes the cosine similarity cos_sim(a[i], b[j]) for all i and j.
+    Computes the cosine similarity between two tensors.
 
-    :return: Matrix with res[i][j]  = cos_sim(a[i], b[j])
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Matrix with res[i][j] = cos_sim(a[i], b[j])
     """
-    if not isinstance(a, torch.Tensor):
-        a = torch.tensor(a)
+    a = _convert_to_batch_tensor(a)
+    b = _convert_to_batch_tensor(b)
 
-    if not isinstance(b, torch.Tensor):
-        b = torch.tensor(b)
-
-    if len(a.shape) == 1:
-        a = a.unsqueeze(0)
-
-    if len(b.shape) == 1:
-        b = b.unsqueeze(0)
-
-    a_norm = torch.nn.functional.normalize(a, p=2, dim=1)
-    b_norm = torch.nn.functional.normalize(b, p=2, dim=1)
+    a_norm = normalize_embeddings(a)
+    b_norm = normalize_embeddings(b)
     return torch.mm(a_norm, b_norm.transpose(0, 1))
 
 
-def dot_score(a: Tensor, b: Tensor) -> Tensor:
+def pairwise_cos_sim(a: Tensor, b: Tensor) -> Tensor:
+    """
+    Computes the pairwise cosine similarity cos_sim(a[i], b[i]).
+
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Vector with res[i] = cos_sim(a[i], b[i])
+    """
+    a = _convert_to_tensor(a)
+    b = _convert_to_tensor(b)
+
+    return pairwise_dot_score(normalize_embeddings(a), normalize_embeddings(b))
+
+
+def dot_score(a: list | np.ndarray | Tensor, b: list | np.ndarray | Tensor) -> Tensor:
     """
     Computes the dot-product dot_prod(a[i], b[j]) for all i and j.
 
-    :return: Matrix with res[i][j]  = dot_prod(a[i], b[j])
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Matrix with res[i][j] = dot_prod(a[i], b[j])
     """
-    if not isinstance(a, torch.Tensor):
-        a = torch.tensor(a)
-
-    if not isinstance(b, torch.Tensor):
-        b = torch.tensor(b)
-
-    if len(a.shape) == 1:
-        a = a.unsqueeze(0)
-
-    if len(b.shape) == 1:
-        b = b.unsqueeze(0)
+    a = _convert_to_batch_tensor(a)
+    b = _convert_to_batch_tensor(b)
 
     return torch.mm(a, b.transpose(0, 1))
 
 
 def pairwise_dot_score(a: Tensor, b: Tensor) -> Tensor:
     """
-    Computes the pairwise dot-product dot_prod(a[i], b[i])
+    Computes the pairwise dot-product dot_prod(a[i], b[i]).
 
-    :return: Vector with res[i] = dot_prod(a[i], b[i])
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Vector with res[i] = dot_prod(a[i], b[i])
     """
-    if not isinstance(a, torch.Tensor):
-        a = torch.tensor(a)
-
-    if not isinstance(b, torch.Tensor):
-        b = torch.tensor(b)
+    a = _convert_to_tensor(a)
+    b = _convert_to_tensor(b)
 
     return (a * b).sum(dim=-1)
 
 
-def pairwise_cos_sim(a: Tensor, b: Tensor) -> Tensor:
+def manhattan_sim(a: list | np.ndarray | Tensor, b: list | np.ndarray | Tensor) -> Tensor:
     """
-    Computes the pairwise cossim cos_sim(a[i], b[i])
+    Computes the manhattan similarity (i.e., negative distance) between two tensors.
 
-    :return: Vector with res[i] = cos_sim(a[i], b[i])
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Matrix with res[i][j] = -manhattan_distance(a[i], b[j])
     """
-    if not isinstance(a, torch.Tensor):
-        a = torch.tensor(a)
+    a = _convert_to_batch_tensor(a)
+    b = _convert_to_batch_tensor(b)
 
-    if not isinstance(b, torch.Tensor):
-        b = torch.tensor(b)
+    return -torch.cdist(a, b, p=1.0)
 
-    return pairwise_dot_score(normalize_embeddings(a), normalize_embeddings(b))
+
+def pairwise_manhattan_sim(a: list | np.ndarray | Tensor, b: list | np.ndarray | Tensor):
+    """
+    Computes the manhattan similarity (i.e., negative distance) between pairs of tensors.
+
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Vector with res[i] = -manhattan_distance(a[i], b[i])
+    """
+    a = _convert_to_tensor(a)
+    b = _convert_to_tensor(b)
+
+    return -torch.sum(torch.abs(a - b), dim=-1)
+
+
+def euclidean_sim(a: list | np.ndarray | Tensor, b: list | np.ndarray | Tensor) -> Tensor:
+    """
+    Computes the euclidean similarity (i.e., negative distance) between two tensors.
+
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Matrix with res[i][j] = -euclidean_distance(a[i], b[j])
+    """
+    a = _convert_to_batch_tensor(a)
+    b = _convert_to_batch_tensor(b)
+
+    return -torch.cdist(a, b, p=2.0)
+
+
+def pairwise_euclidean_sim(a: list | np.ndarray | Tensor, b: list | np.ndarray | Tensor):
+    """
+    Computes the euclidean distance (i.e., negative distance) between pairs of tensors.
+
+    Args:
+        a (Union[list, np.ndarray, Tensor]): The first tensor.
+        b (Union[list, np.ndarray, Tensor]): The second tensor.
+
+    Returns:
+        Tensor: Vector with res[i] = -euclidean_distance(a[i], b[i])
+    """
+    a = _convert_to_tensor(a)
+    b = _convert_to_tensor(b)
+
+    return -torch.sqrt(torch.sum((a - b) ** 2, dim=-1))
 
 
 def pairwise_angle_sim(x: Tensor, y: Tensor) -> Tensor:
     """
-    Computes the absolute normalized angle distance;
-    see AnglELoss or https://arxiv.org/abs/2309.12871v1
-    for more information.
+    Computes the absolute normalized angle distance. See :class:`~sentence_transformers.losses.AnglELoss`
+    or https://arxiv.org/abs/2309.12871v1 for more information.
 
-    :return: Vector with res[i] = angle_sim(a[i], b[i])
+    Args:
+        x (Tensor): The first tensor.
+        y (Tensor): The second tensor.
+
+    Returns:
+        Tensor: Vector with res[i] = angle_sim(a[i], b[i])
     """
 
-    if not isinstance(x, torch.Tensor):
-        x = torch.tensor(x)
-
-    if not isinstance(y, torch.Tensor):
-        y = torch.tensor(y)
+    x = _convert_to_tensor(x)
+    y = _convert_to_tensor(y)
 
     # modified from https://github.com/SeanLee97/AnglE/blob/main/angle_emb/angle.py
     # chunk both tensors to obtain complex components
@@ -137,28 +262,85 @@ def pairwise_angle_sim(x: Tensor, y: Tensor) -> Tensor:
 
 def normalize_embeddings(embeddings: Tensor) -> Tensor:
     """
-    Normalizes the embeddings matrix, so that each sentence embedding has unit length
+    Normalizes the embeddings matrix, so that each sentence embedding has unit length.
+
+    Args:
+        embeddings (Tensor): The input embeddings matrix.
+
+    Returns:
+        Tensor: The normalized embeddings matrix.
     """
     return torch.nn.functional.normalize(embeddings, p=2, dim=1)
 
 
+@overload
+def truncate_embeddings(embeddings: np.ndarray, truncate_dim: int | None) -> np.ndarray: ...
+
+
+@overload
+def truncate_embeddings(embeddings: torch.Tensor, truncate_dim: int | None) -> torch.Tensor: ...
+
+
+def truncate_embeddings(embeddings: np.ndarray | torch.Tensor, truncate_dim: int | None) -> np.ndarray | torch.Tensor:
+    """
+    Truncates the embeddings matrix.
+
+    Args:
+        embeddings (Union[np.ndarray, torch.Tensor]): Embeddings to truncate.
+        truncate_dim (Optional[int]): The dimension to truncate sentence embeddings to. `None` does no truncation.
+
+    Example:
+        >>> from sentence_transformers import SentenceTransformer
+        >>> from sentence_transformers.util import truncate_embeddings
+        >>> model = SentenceTransformer("tomaarsen/mpnet-base-nli-matryoshka")
+        >>> embeddings = model.encode(["It's so nice outside!", "Today is a beautiful day.", "He drove to work earlier"])
+        >>> embeddings.shape
+        (3, 768)
+        >>> model.similarity(embeddings, embeddings)
+        tensor([[1.0000, 0.8100, 0.1426],
+                [0.8100, 1.0000, 0.2121],
+                [0.1426, 0.2121, 1.0000]])
+        >>> truncated_embeddings = truncate_embeddings(embeddings, 128)
+        >>> truncated_embeddings.shape
+        >>> model.similarity(truncated_embeddings, truncated_embeddings)
+        tensor([[1.0000, 0.8092, 0.1987],
+                [0.8092, 1.0000, 0.2716],
+                [0.1987, 0.2716, 1.0000]])
+
+    Returns:
+        Union[np.ndarray, torch.Tensor]: Truncated embeddings.
+    """
+    return embeddings[..., :truncate_dim]
+
+
 def paraphrase_mining(
-    model, sentences: List[str], show_progress_bar: bool = False, batch_size: int = 32, *args, **kwargs
-) -> List[List[Union[float, int]]]:
+    model,
+    sentences: list[str],
+    show_progress_bar: bool = False,
+    batch_size: int = 32,
+    query_chunk_size: int = 5000,
+    corpus_chunk_size: int = 100000,
+    max_pairs: int = 500000,
+    top_k: int = 100,
+    score_function: Callable[[Tensor, Tensor], Tensor] = cos_sim,
+) -> list[list[float | int]]:
     """
     Given a list of sentences / texts, this function performs paraphrase mining. It compares all sentences against all
     other sentences and returns a list with the pairs that have the highest cosine similarity score.
 
-    :param model: SentenceTransformer model for embedding computation
-    :param sentences: A list of strings (texts or sentences)
-    :param show_progress_bar: Plotting of a progress bar
-    :param batch_size: Number of texts that are encoded simultaneously by the model
-    :param query_chunk_size: Search for most similar pairs for #query_chunk_size at the same time. Decrease, to lower memory footprint (increases run-time).
-    :param corpus_chunk_size: Compare a sentence simultaneously against #corpus_chunk_size other sentences. Decrease, to lower memory footprint (increases run-time).
-    :param max_pairs: Maximal number of text pairs returned.
-    :param top_k: For each sentence, we retrieve up to top_k other sentences
-    :param score_function: Function for computing scores. By default, cosine similarity.
-    :return: Returns a list of triplets with the format [score, id1, id2]
+    Args:
+        model (SentenceTransformer): SentenceTransformer model for embedding computation
+        sentences (List[str]): A list of strings (texts or sentences)
+        show_progress_bar (bool, optional): Plotting of a progress bar. Defaults to False.
+        batch_size (int, optional): Number of texts that are encoded simultaneously by the model. Defaults to 32.
+        query_chunk_size (int, optional): Search for most similar pairs for #query_chunk_size at the same time. Decrease, to lower memory footprint (increases run-time). Defaults to 5000.
+        corpus_chunk_size (int, optional): Compare a sentence simultaneously against #corpus_chunk_size other sentences. Decrease, to lower memory footprint (increases run-time). Defaults to 100000.
+        max_pairs (int, optional): Maximal number of text pairs returned. Defaults to 500000.
+        top_k (int, optional): For each sentence, we retrieve up to top_k other sentences. Defaults to 100.
+        score_function (Callable[[Tensor, Tensor], Tensor], optional): Function for computing scores. By default, cosine similarity. Defaults to cos_sim.
+
+    Returns:
+        List[List[Union[float, int]]]: Returns a list of triplets with the format [score, id1, id2]
     """
 
     # Compute embedding for the sentences
@@ -166,7 +348,14 @@ def paraphrase_mining(
         sentences, show_progress_bar=show_progress_bar, batch_size=batch_size, convert_to_tensor=True
     )
 
-    return paraphrase_mining_embeddings(embeddings, *args, **kwargs)
+    return paraphrase_mining_embeddings(
+        embeddings,
+        query_chunk_size=query_chunk_size,
+        corpus_chunk_size=corpus_chunk_size,
+        max_pairs=max_pairs,
+        top_k=top_k,
+        score_function=score_function,
+    )
 
 
 def paraphrase_mining_embeddings(
@@ -176,18 +365,21 @@ def paraphrase_mining_embeddings(
     max_pairs: int = 500000,
     top_k: int = 100,
     score_function: Callable[[Tensor, Tensor], Tensor] = cos_sim,
-) -> List[List[Union[float, int]]]:
+) -> list[list[float | int]]:
     """
     Given a list of sentences / texts, this function performs paraphrase mining. It compares all sentences against all
     other sentences and returns a list with the pairs that have the highest cosine similarity score.
 
-    :param embeddings: A tensor with the embeddings
-    :param query_chunk_size: Search for most similar pairs for #query_chunk_size at the same time. Decrease, to lower memory footprint (increases run-time).
-    :param corpus_chunk_size: Compare a sentence simultaneously against #corpus_chunk_size other sentences. Decrease, to lower memory footprint (increases run-time).
-    :param max_pairs: Maximal number of text pairs returned.
-    :param top_k: For each sentence, we retrieve up to top_k other sentences
-    :param score_function: Function for computing scores. By default, cosine similarity.
-    :return: Returns a list of triplets with the format [score, id1, id2]
+    Args:
+        embeddings (Tensor): A tensor with the embeddings
+        query_chunk_size (int): Search for most similar pairs for #query_chunk_size at the same time. Decrease, to lower memory footprint (increases run-time).
+        corpus_chunk_size (int): Compare a sentence simultaneously against #corpus_chunk_size other sentences. Decrease, to lower memory footprint (increases run-time).
+        max_pairs (int): Maximal number of text pairs returned.
+        top_k (int): For each sentence, we retrieve up to top_k other sentences
+        score_function (Callable[[Tensor, Tensor], Tensor]): Function for computing scores. By default, cosine similarity.
+
+    Returns:
+        List[List[Union[float, int]]]: Returns a list of triplets with the format [score, id1, id2]
     """
 
     top_k += 1  # A sentence has the highest similarity to itself. Increase +1 as we are interest in distinct pairs
@@ -239,7 +431,7 @@ def paraphrase_mining_embeddings(
     return pairs_list
 
 
-def information_retrieval(*args, **kwargs) -> List[List[Dict[str, Union[int, float]]]]:
+def information_retrieval(*args, **kwargs) -> list[list[dict[str, int | float]]]:
     """This function is deprecated. Use semantic_search instead"""
     return semantic_search(*args, **kwargs)
 
@@ -251,18 +443,21 @@ def semantic_search(
     corpus_chunk_size: int = 500000,
     top_k: int = 10,
     score_function: Callable[[Tensor, Tensor], Tensor] = cos_sim,
-) -> List[List[Dict[str, Union[int, float]]]]:
+) -> list[list[dict[str, int | float]]]:
     """
     This function performs a cosine similarity search between a list of query embeddings  and a list of corpus embeddings.
     It can be used for Information Retrieval / Semantic Search for corpora up to about 1 Million entries.
 
-    :param query_embeddings: A 2 dimensional tensor with the query embeddings.
-    :param corpus_embeddings: A 2 dimensional tensor with the corpus embeddings.
-    :param query_chunk_size: Process 100 queries simultaneously. Increasing that value increases the speed, but requires more memory.
-    :param corpus_chunk_size: Scans the corpus 100k entries at a time. Increasing that value increases the speed, but requires more memory.
-    :param top_k: Retrieve top k matching entries.
-    :param score_function: Function for computing scores. By default, cosine similarity.
-    :return: Returns a list with one entry for each query. Each entry is a list of dictionaries with the keys 'corpus_id' and 'score', sorted by decreasing cosine similarity scores.
+    Args:
+        query_embeddings (Tensor): A 2 dimensional tensor with the query embeddings.
+        corpus_embeddings (Tensor): A 2 dimensional tensor with the corpus embeddings.
+        query_chunk_size (int, optional): Process 100 queries simultaneously. Increasing that value increases the speed, but requires more memory. Defaults to 100.
+        corpus_chunk_size (int, optional): Scans the corpus 100k entries at a time. Increasing that value increases the speed, but requires more memory. Defaults to 500000.
+        top_k (int, optional): Retrieve top k matching entries. Defaults to 10.
+        score_function (Callable[[Tensor, Tensor], Tensor], optional): Function for computing scores. By default, cosine similarity.
+
+    Returns:
+        List[List[Dict[str, Union[int, float]]]]: A list with one entry for each query. Each entry is a list of dictionaries with the keys 'corpus_id' and 'score', sorted by decreasing cosine similarity scores.
     """
 
     if isinstance(query_embeddings, (np.ndarray, np.generic)):
@@ -321,16 +516,384 @@ def semantic_search(
     return queries_result_list
 
 
-def http_get(url, path) -> None:
+def mine_hard_negatives(
+    dataset: Dataset,
+    model: SentenceTransformer,
+    cross_encoder: CrossEncoder | None = None,
+    range_min: int = 0,
+    range_max: int | None = None,
+    max_score: float | None = None,
+    margin: float | None = None,
+    num_negatives: int = 3,
+    sampling_strategy: Literal["random", "top"] = "top",
+    as_triplets: bool = True,
+    batch_size=32,
+    use_faiss: bool = False,
+    verbose: bool = True,
+) -> Dataset:
     """
-    Downloads a URL to a given path on disc
+    Add hard negatives to a dataset of (anchor, positive) pairs to create (anchor, positive, negative) triplets or
+    (anchor, positive, negative_1, ..., negative_n) tuples.
+
+    Hard negative mining is a technique to improve the quality of a dataset by adding hard negatives, which are
+    texts that may appear similar to the anchor, but are not. Using hard negatives can improve the performance of
+    models trained on the dataset.
+
+    This function uses a SentenceTransformer model to embed the sentences in the dataset, and then finds the closest
+    matches to each anchor sentence in the dataset. It then samples negatives from the closest matches, optionally
+    using a CrossEncoder model to rescore the candidates.
+
+    You can influence the candidate negative selection in various ways:
+
+    - **range_min**: Minimum rank of the closest matches to consider as negatives: useful to skip the most similar texts to
+      avoid marking texts as negative that are actually positives.
+    - **range_max**: Maximum rank of the closest matches to consider as negatives: useful to limit the number of candidates
+      to sample negatives from. A lower value makes processing faster, but may result in less candidate negatives that
+      satisfy the margin or max_score conditions.
+    - **max_score**: Maximum score to consider as a negative: useful to skip candidates that are too similar to the anchor.
+    - **margin**: Margin for hard negative mining: useful to skip candidates negatives whose similarity to the anchor is
+      within a certain margin of the positive pair. A value of 0 can be used to enforce that the negative is always
+      further away from the anchor than the positive.
+    - **sampling_strategy**: Sampling strategy for negatives: "top" or "random". "top" will always sample the top n
+      candidates as negatives, while "random" will sample n negatives randomly from the candidates that satisfy the
+      margin or max_score conditions.
+
+    Example:
+
+        >>> from sentence_transformers.util import mine_hard_negatives
+        >>> from sentence_transformers import SentenceTransformer
+        >>> from datasets import load_dataset
+        >>> # Load a Sentence Transformer model
+        >>> model = SentenceTransformer("all-MiniLM-L6-v2")
+        >>>
+        >>> # Load a dataset to mine hard negatives from
+        >>> dataset = load_dataset("sentence-transformers/natural-questions", split="train")
+        >>> dataset
+        Dataset({
+            features: ['query', 'answer'],
+            num_rows: 100231
+        })
+        >>> dataset = mine_hard_negatives(
+        ...     dataset=dataset,
+        ...     model=model,
+        ...     range_min=10,
+        ...     range_max=50,
+        ...     max_score=0.8,
+        ...     margin=0.1,
+        ...     num_negatives=5,
+        ...     sampling_strategy="random",
+        ...     batch_size=128,
+        ...     use_faiss=True,
+        ... )
+        Batches: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 784/784 [00:43<00:00, 17.83it/s]
+        Batches: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 784/784 [00:07<00:00, 99.60it/s]
+        Querying FAISS index: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████| 784/784 [00:00<00:00, 884.99it/s]
+        Metric       Positive       Negative     Difference
+        Count         100,231        431,255        431,255
+        Mean           0.6866         0.4289         0.2804
+        Median         0.7010         0.4193         0.2740
+        Std            0.1125         0.0754         0.0999
+        Min            0.0303         0.1720         0.1001
+        25%            0.6221         0.3747         0.1991
+        50%            0.7010         0.4193         0.2740
+        75%            0.7667         0.4751         0.3530
+        Max            0.9584         0.7743         0.7003
+        Skipped 1289492 potential negatives (25.23%) due to the margin of 0.1.
+        Skipped 39 potential negatives (0.00%) due to the maximum score of 0.8.
+        Could not find enough negatives for 69900 samples (13.95%). Consider adjusting the range_max, range_min, margin and max_score parameters if you'd like to find more valid negatives.
+        >>> # Note: The minimum similarity difference is 0.1001 due to our margin of 0.1
+        >>> dataset
+        Dataset({
+            features: ['query', 'answer', 'negative'],
+            num_rows: 431255
+        })
+        >>> dataset[0]
+        {
+            'query': 'when did richmond last play in a preliminary final',
+            'answer': "Richmond Football Club Richmond began 2017 with 5 straight wins, a feat it had not achieved since 1995. A series of close losses hampered the Tigers throughout the middle of the season, including a 5-point loss to the Western Bulldogs, 2-point loss to Fremantle, and a 3-point loss to the Giants. Richmond ended the season strongly with convincing victories over Fremantle and St Kilda in the final two rounds, elevating the club to 3rd on the ladder. Richmond's first final of the season against the Cats at the MCG attracted a record qualifying final crowd of 95,028; the Tigers won by 51 points. Having advanced to the first preliminary finals for the first time since 2001, Richmond defeated Greater Western Sydney by 36 points in front of a crowd of 94,258 to progress to the Grand Final against Adelaide, their first Grand Final appearance since 1982. The attendance was 100,021, the largest crowd to a grand final since 1986. The Crows led at quarter time and led by as many as 13, but the Tigers took over the game as it progressed and scored seven straight goals at one point. They eventually would win by 48 points – 16.12 (108) to Adelaide's 8.12 (60) – to end their 37-year flag drought.[22] Dustin Martin also became the first player to win a Premiership medal, the Brownlow Medal and the Norm Smith Medal in the same season, while Damien Hardwick was named AFL Coaches Association Coach of the Year. Richmond's jump from 13th to premiers also marked the biggest jump from one AFL season to the next.",
+            'negative': "2018 NRL Grand Final The 2018 NRL Grand Final was the conclusive and premiership-deciding game of the 2018 National Rugby League season and was played on Sunday September 30 at Sydney's ANZ Stadium.[1] The match was contested between minor premiers the Sydney Roosters and defending premiers the Melbourne Storm. In front of a crowd of 82,688, Sydney won the match 21â€“6 to claim their 14th premiership title and their first since 2013. Roosters five-eighth Luke Keary was awarded the Clive Churchill Medal as the game's official man of the match."
+        }
+        >>> dataset.push_to_hub("natural-questions-hard-negatives", "triplet-all")
+
+    Args:
+        dataset (Dataset): A dataset containing (anchor, positive) pairs.
+        model (SentenceTransformer): A SentenceTransformer model to use for embedding the sentences.
+        cross_encoder (CrossEncoder, optional): A CrossEncoder model to use for rescoring the candidates. Defaults to None.
+        range_min (int): Minimum rank of the closest matches to consider as negatives. Defaults to 0.
+        range_max (int, optional): Maximum rank of the closest matches to consider as negatives. Defaults to None.
+        max_score (float, optional): Maximum score to consider as a negative. Defaults to None.
+        margin (float, optional): Margin for hard negative mining. Defaults to None.
+        num_negatives (int): Number of negatives to sample. Defaults to 3.
+        sampling_strategy (Literal["random", "top"]): Sampling strategy for negatives: "top" or "random". Defaults to "top".
+        as_triplets (bool): If True, returns up to `num_negatives` (anchor, positive, negative) triplets for each input sample.
+            If False, returns 1 (anchor, positive, negative_1, ..., negative_n) tuple for each input sample. Defaults to True.
+        batch_size (int): Batch size for processing. Defaults to 32.
+        use_faiss (bool): Whether to use FAISS for similarity search. May be recommended for large datasets. Defaults to False.
+        verbose (bool): Whether to print statistics and logging. Defaults to True.
+
+    Returns:
+        Dataset: A dataset containing (anchor, positive, negative) triplets or (anchor, positive, negative_1, ..., negative_n) tuples.
+    """
+    if not is_datasets_available():
+        raise ImportError("Please install `datasets` to use this function: `pip install datasets`.")
+
+    from datasets import Dataset
+
+    if range_max is None:
+        if margin is not None or max_score is not None:
+            # 1 positive, 10 * num_negatives negatives because some might be skipped, and range_min skipped
+            range_max = range_min + (num_negatives * 10) + 1
+        else:
+            # 1 positive, num_negatives negatives, and range_min skipped
+            range_max = range_min + num_negatives + 1
+        if verbose:
+            print(f"Setting range_max to {range_max} based on other parameters.")
+
+    # Combine anchor and positive sentences to get unique corpus
+    columns = dataset.column_names
+    if len(columns) != 2:
+        raise ValueError("Dataset must contain exactly two columns.")
+
+    log_counters = {}
+    queries = dataset[columns[0]]
+    corpus = dataset[columns[1]]
+
+    # Embed the corpus and queries
+    corpus_embeddings = model.encode(corpus, batch_size=batch_size, convert_to_tensor=True, show_progress_bar=True)
+    query_embeddings = model.encode(queries, batch_size=batch_size, convert_to_tensor=True, show_progress_bar=True)
+    batch_idx = torch.arange(len(queries)).unsqueeze(-1)
+
+    if use_faiss:
+        import faiss
+
+        # Compute the positive scores separate from FAISS
+        positive_scores = model.similarity_pairwise(query_embeddings, corpus_embeddings).cpu()
+
+        query_embeddings = query_embeddings.cpu().numpy()
+        corpus_embeddings = corpus_embeddings.cpu().numpy()
+        index = faiss.IndexFlatIP(len(corpus_embeddings[0]))
+        # Move the index to the GPU if available
+        try:
+            co = faiss.GpuMultipleClonerOptions()
+            co.shard = True
+            co.useFloat16 = True
+            index: faiss.IndexFlatIP = faiss.index_cpu_to_all_gpus(index, co=co)
+        except Exception:
+            pass
+        index.add(corpus_embeddings)
+        scores_list = []
+        indices_list = []
+        # Iterate over query embeddings in batches so we can track the progress
+        for i in trange(0, len(query_embeddings), batch_size, desc="Querying FAISS index"):
+            query_chunk = query_embeddings[i : i + batch_size]
+            scores, indices = index.search(query_chunk, k=range_max + 1)
+            scores_list.append(scores)
+            indices_list.append(indices)
+        scores = torch.from_numpy(np.concatenate(scores_list, axis=0))
+        indices = torch.from_numpy(np.concatenate(indices_list, axis=0))
+    else:
+        # Compute all similarity scores
+        scores = model.similarity(query_embeddings, corpus_embeddings).cpu()
+        positive_scores = scores.diagonal().clone()
+
+        # Keep only the range_max + 1 highest scores. We offset by 1 to potentially include the positive pair
+        scores, indices = torch.topk(scores, k=range_max + 1, dim=1)
+    del query_embeddings
+    del corpus_embeddings
+
+    # Scores is a [num_queries, range_max + 1] tensor, where we set the values to -inf to disqualify the corresponding
+    # text as a negative candidate. Here we disqualify the positive pair
+    positive_indices = indices == torch.arange(len(queries), device=indices.device).unsqueeze(-1)
+    scores[positive_indices] = -float("inf")
+
+    num_candidates = scores.numel()
+
+    # Rescore with cross_encoder
+    if cross_encoder is not None and (margin is not None or max_score is not None):
+        for idx, candidate_neg_idx in tqdm(enumerate(indices), desc="Rescoring with CrossEncoder", total=len(indices)):
+            query = queries[idx]
+            candidate_passages = [corpus[neg_idx] for neg_idx in candidate_neg_idx]
+            pred_scores = cross_encoder.predict(
+                list(zip([query] * (range_max + 1), candidate_passages)),
+                batch_size=batch_size,
+                convert_to_tensor=True,
+            )
+            # If we rescored a positive pair, make sure that it is disqualified again
+            if idx in candidate_neg_idx:
+                pred_scores[candidate_neg_idx == idx] = -float("inf")
+            scores[idx] = pred_scores
+        positive_scores = cross_encoder.predict(
+            list(zip(queries, corpus)),
+            batch_size=batch_size,
+            convert_to_tensor=True,
+        )
+
+    # Remove based on margin
+    if margin is not None:
+        removed_indices = scores + margin > positive_scores.repeat(scores.size(1), 1).T
+        scores[removed_indices] = -float("inf")
+
+        num_skipped = removed_indices.sum().item()
+        if num_skipped:
+            log_counters["margin"] = {
+                "skipped": num_skipped,
+                "ratio": num_skipped / num_candidates,
+            }
+            num_candidates -= num_skipped
+
+    # Remove based on max_score
+    if max_score is not None:
+        removed_indices = scores > max_score
+        scores[removed_indices] = -float("inf")
+
+        num_skipped = removed_indices.sum().item()
+        if num_skipped:
+            log_counters["max_score"] = {
+                "skipped": num_skipped,
+                "ratio": num_skipped / num_candidates,
+            }
+
+    # Grab the top negative candidates and remove the first range_min candidates
+    negative_scores, local_indices = torch.topk(scores, k=range_max, dim=1)
+    indices = indices[batch_idx, local_indices]
+    if range_min:
+        indices = indices[:, range_min:]
+        negative_scores = negative_scores[:, range_min:]
+
+    # Either grab the top negatives or sample randomly
+    if sampling_strategy == "top":
+        indices = indices[:, :num_negatives]
+        negative_scores = negative_scores[:, :num_negatives]
+    elif sampling_strategy == "random":
+        # Prevent sampling -inf values if possible
+        num_options = indices.size(1) - negative_scores.isinf().sum(1)
+        num_options = num_options.clamp(min=num_negatives)
+        # Randomly sample negatives from each row
+        sampled_idx = [random.sample(range(options), k=num_negatives) for options in num_options]
+        indices = indices[batch_idx, sampled_idx]
+        negative_scores = negative_scores[batch_idx, sampled_idx]
+        # Resort the indices and scores
+        negative_scores, local_indices = negative_scores.sort(dim=1, descending=True)
+        indices = indices[batch_idx, local_indices]
+
+    if as_triplets:
+        # negative_scores is [num_queries, num_negatives], but may contain some -inf values if not enough negatives were found
+        indices_to_keep = negative_scores != -float("inf")
+        # This turns indices and negative_scores into 1d tensors
+        indices = indices[indices_to_keep]
+        negative_scores = negative_scores[indices_to_keep]
+        anchor_indices = torch.arange(len(queries), device=indices_to_keep.device).repeat(num_negatives, 1).T
+        anchor_indices = anchor_indices[indices_to_keep]
+
+        triplets_data = {
+            columns[0]: [],
+            columns[1]: [],
+            "negative": [],
+        }
+        for anchor_idx, negative_idx in zip(anchor_indices, indices):
+            triplets_data[columns[0]].append(queries[anchor_idx])
+            triplets_data[columns[1]].append(corpus[anchor_idx])
+            triplets_data["negative"].append(corpus[negative_idx])
+        difference_scores = positive_scores.repeat(num_negatives, 1).T[indices_to_keep] - negative_scores
+
+    else:
+        # Keep only indices where num_negative negatives were found
+        indices_to_keep = (negative_scores != -float("inf")).all(dim=1)
+        negative_scores = negative_scores[indices_to_keep]
+        indices = indices[indices_to_keep]
+
+        # Create a list of (anchor, positive, negative_1, ..., negative_`num_negatives`) tuples
+        triplets_data = {
+            columns[0]: [queries[idx] for idx in range(len(queries)) if indices_to_keep[idx]],
+            columns[1]: [corpus[idx] for idx in range(len(corpus)) if indices_to_keep[idx]],
+            **{
+                f"negative_{i}": [corpus[neg_idx] for neg_idx in neg_indices]
+                for i, neg_indices in enumerate(indices.T, start=1)
+            },
+        }
+        # Flatten it so we can use for logging
+        negative_scores = negative_scores.flatten()
+        difference_scores = positive_scores[indices_to_keep].repeat(num_negatives, 1).T.flatten() - negative_scores
+
+    if len(triplets_data) == 0:
+        raise ValueError("No triplets could be generated. Please check the parameters and dataset.")
+    triplets_dataset = Dataset.from_dict(triplets_data)
+
+    # Report some statistics
+    if verbose:
+        row_format = "{:<6} {:>14} {:>14} {:>14}"
+        formatter = lambda value: f"{value.item():.4f}" if isinstance(value, torch.Tensor) else f"{value:,}"
+        print(row_format.format("Metric", "Positive", "Negative", "Difference"))
+        for metric, function in [
+            ("count", len),
+            ("mean", torch.mean),
+            ("median", torch.median),
+            ("std", torch.std),
+            ("min", torch.min),
+            ("25%", lambda scores: torch.quantile(scores.float(), q=0.25)),
+            ("50%", lambda scores: torch.quantile(scores.float(), q=0.5)),
+            ("75%", lambda scores: torch.quantile(scores.float(), q=0.75)),
+            ("max", torch.max),
+        ]:
+            print(
+                row_format.format(
+                    metric.capitalize(),
+                    formatter(function(positive_scores)),
+                    formatter(function(negative_scores)),
+                    formatter(function(difference_scores)),
+                )
+            )
+
+        if "margin" in log_counters:
+            print(
+                f"Skipped {log_counters['margin']['skipped']} potential negatives ({log_counters['margin']['ratio']:.2%}) due to the margin of {margin}."
+            )
+        if "max_score" in log_counters:
+            print(
+                f"Skipped {log_counters['max_score']['skipped']} potential negatives ({log_counters['max_score']['ratio']:.2%}) due to the maximum score of {max_score}."
+            )
+
+        missing_negatives = (num_negatives * len(queries)) - len(negative_scores)
+        if missing_negatives > 0:
+            solutions = ["range_max"]
+            if range_min > 0:
+                solutions.append("range_min")
+            if margin is not None:
+                solutions.append("margin")
+            if max_score is not None:
+                solutions.append("max_score")
+            considerations = ", ".join(solutions[:-1])
+            if len(solutions) > 1:
+                considerations += " and " + solutions[-1]
+            missing_negatives_ratio = missing_negatives / (num_negatives * len(queries))
+            print(
+                f"Could not find enough negatives for {missing_negatives} samples ({missing_negatives_ratio:.2%})."
+                f" Consider adjusting the {considerations} parameter{'s' if len(solutions) > 1 else ''} if you'd like to find more valid negatives."
+            )
+
+    return triplets_dataset
+
+
+def http_get(url: str, path: str) -> None:
+    """
+    Downloads a URL to a given path on disk.
+
+    Args:
+        url (str): The URL to download.
+        path (str): The path to save the downloaded file.
+
+    Raises:
+        requests.HTTPError: If the HTTP request returns a non-200 status code.
+
+    Returns:
+        None
     """
     if os.path.dirname(path) != "":
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
     req = requests.get(url, stream=True)
     if req.status_code != 200:
-        print("Exception when trying to download {}. Response {}".format(url, req.status_code), file=sys.stderr)
+        print(f"Exception when trying to download {url}. Response {req.status_code}", file=sys.stderr)
         req.raise_for_status()
         return
 
@@ -348,9 +911,16 @@ def http_get(url, path) -> None:
     progress.close()
 
 
-def batch_to_device(batch, target_device: device):
+def batch_to_device(batch: dict[str, Any], target_device: device) -> dict[str, Any]:
     """
-    send a pytorch batch to a device (CPU/GPU)
+    Send a PyTorch batch (i.e., a dictionary of string keys to Tensors) to a device (e.g. "cpu", "cuda", "mps").
+
+    Args:
+        batch (Dict[str, Tensor]): The batch to send to the device.
+        target_device (torch.device): The target device (e.g. "cpu", "cuda", "mps").
+
+    Returns:
+        Dict[str, Tensor]: The batch with tensors sent to the target device.
     """
     for key in batch:
         if isinstance(batch[key], Tensor):
@@ -362,6 +932,21 @@ def fullname(o) -> str:
     """
     Gives a full name (package_name.class_name) for a class / object in Python. Will
     be used to load the correct classes from JSON files
+
+    Args:
+        o: The object for which to get the full name.
+
+    Returns:
+        str: The full name of the object.
+
+    Example:
+        >>> from sentence_transformers.losses import MultipleNegativesRankingLoss
+        >>> from sentence_transformers import SentenceTransformer
+        >>> from sentence_transformers.util import fullname
+        >>> model = SentenceTransformer('all-MiniLM-L6-v2')
+        >>> loss = MultipleNegativesRankingLoss(model)
+        >>> fullname(loss)
+        'sentence_transformers.losses.MultipleNegativesRankingLoss.MultipleNegativesRankingLoss'
     """
 
     module = o.__class__.__module__
@@ -371,15 +956,28 @@ def fullname(o) -> str:
         return module + "." + o.__class__.__name__
 
 
-def import_from_string(dotted_path):
+def import_from_string(dotted_path: str) -> type:
     """
     Import a dotted module path and return the attribute/class designated by the
     last name in the path. Raise ImportError if the import failed.
+
+    Args:
+        dotted_path (str): The dotted module path.
+
+    Returns:
+        Any: The attribute/class designated by the last name in the path.
+
+    Raises:
+        ImportError: If the import failed.
+
+    Example:
+        >>> import_from_string('sentence_transformers.losses.MultipleNegativesRankingLoss')
+        <class 'sentence_transformers.losses.MultipleNegativesRankingLoss.MultipleNegativesRankingLoss'>
     """
     try:
         module_path, class_name = dotted_path.rsplit(".", 1)
     except ValueError:
-        msg = "%s doesn't look like a module path" % dotted_path
+        msg = f"{dotted_path} doesn't look like a module path"
         raise ImportError(msg)
 
     try:
@@ -390,18 +988,33 @@ def import_from_string(dotted_path):
     try:
         return getattr(module, class_name)
     except AttributeError:
-        msg = 'Module "%s" does not define a "%s" attribute/class' % (module_path, class_name)
+        msg = f'Module "{module_path}" does not define a "{class_name}" attribute/class'
         raise ImportError(msg)
 
 
 def community_detection(
-    embeddings, threshold=0.75, min_community_size=10, batch_size=1024, show_progress_bar=False
-) -> List[List[int]]:
+    embeddings: torch.Tensor | np.ndarray,
+    threshold: float = 0.75,
+    min_community_size: int = 10,
+    batch_size: int = 1024,
+    show_progress_bar: bool = False,
+) -> list[list[int]]:
     """
-    Function for Fast Community Detection
+    Function for Fast Community Detection.
+
     Finds in the embeddings all communities, i.e. embeddings that are close (closer than threshold).
     Returns only communities that are larger than min_community_size. The communities are returned
     in decreasing order. The first element in each list is the central point in the community.
+
+    Args:
+        embeddings (torch.Tensor or numpy.ndarray): The input embeddings.
+        threshold (float): The threshold for determining if two embeddings are close. Defaults to 0.75.
+        min_community_size (int): The minimum size of a community to be considered. Defaults to 10.
+        batch_size (int): The batch size for computing cosine similarity scores. Defaults to 1024.
+        show_progress_bar (bool): Whether to show a progress bar during computation. Defaults to False.
+
+    Returns:
+        List[List[int]]: A list of communities, where each community is represented as a list of indices.
     """
     if not isinstance(embeddings, torch.Tensor):
         embeddings = torch.tensor(embeddings)
@@ -506,22 +1119,80 @@ class disabled_tqdm(tqdm):
                 raise
 
 
+@contextmanager
+def disable_logging(highest_level=logging.CRITICAL):
+    """
+    A context manager that will prevent any logging messages
+    triggered during the body from being processed.
+
+    Args:
+        highest_level: the maximum logging level allowed.
+    """
+
+    previous_level = logging.root.manager.disable
+
+    logging.disable(highest_level)
+
+    try:
+        yield
+    finally:
+        logging.disable(previous_level)
+
+
 def is_sentence_transformer_model(
     model_name_or_path: str,
-    token: Optional[Union[bool, str]] = None,
-    cache_folder: Optional[str] = None,
-    revision: Optional[str] = None,
+    token: bool | str | None = None,
+    cache_folder: str | None = None,
+    revision: str | None = None,
+    local_files_only: bool = False,
 ) -> bool:
-    return bool(load_file_path(model_name_or_path, "modules.json", token, cache_folder, revision=revision))
+    """
+    Checks if the given model name or path corresponds to a SentenceTransformer model.
+
+    Args:
+        model_name_or_path (str): The name or path of the model.
+        token (Optional[Union[bool, str]]): The token to be used for authentication. Defaults to None.
+        cache_folder (Optional[str]): The folder to cache the model files. Defaults to None.
+        revision (Optional[str]): The revision of the model. Defaults to None.
+        local_files_only (bool): Whether to only use local files for the model. Defaults to False.
+
+    Returns:
+        bool: True if the model is a SentenceTransformer model, False otherwise.
+    """
+    return bool(
+        load_file_path(
+            model_name_or_path,
+            "modules.json",
+            token,
+            cache_folder,
+            revision=revision,
+            local_files_only=local_files_only,
+        )
+    )
 
 
 def load_file_path(
     model_name_or_path: str,
     filename: str,
-    token: Optional[Union[bool, str]],
-    cache_folder: Optional[str],
-    revision: Optional[str] = None,
-) -> Optional[str]:
+    token: bool | str | None,
+    cache_folder: str | None,
+    revision: str | None = None,
+    local_files_only: bool = False,
+) -> str | None:
+    """
+    Loads a file from a local or remote location.
+
+    Args:
+        model_name_or_path (str): The model name or path.
+        filename (str): The name of the file to load.
+        token (Optional[Union[bool, str]]): The token to access the remote file (if applicable).
+        cache_folder (Optional[str]): The folder to cache the downloaded file (if applicable).
+        revision (Optional[str], optional): The revision of the file (if applicable). Defaults to None.
+        local_files_only (bool, optional): Whether to only consider local files. Defaults to False.
+
+    Returns:
+        Optional[str]: The path to the loaded file, or None if the file could not be found or loaded.
+    """
     # If file is local
     file_path = os.path.join(model_name_or_path, filename)
     if os.path.exists(file_path):
@@ -536,18 +1207,34 @@ def load_file_path(
             library_name="sentence-transformers",
             token=token,
             cache_dir=cache_folder,
+            local_files_only=local_files_only,
         )
     except Exception:
-        return
+        return None
 
 
 def load_dir_path(
     model_name_or_path: str,
     directory: str,
-    token: Optional[Union[bool, str]],
-    cache_folder: Optional[str],
-    revision: Optional[str] = None,
-) -> Optional[str]:
+    token: bool | str | None,
+    cache_folder: str | None,
+    revision: str | None = None,
+    local_files_only: bool = False,
+) -> str | None:
+    """
+    Loads the directory path for a given model name or path.
+
+    Args:
+        model_name_or_path (str): The name or path of the model.
+        directory (str): The directory to load.
+        token (Optional[Union[bool, str]]): The token for authentication.
+        cache_folder (Optional[str]): The folder to cache the downloaded files.
+        revision (Optional[str], optional): The revision of the model. Defaults to None.
+        local_files_only (bool, optional): Whether to only use local files. Defaults to False.
+
+    Returns:
+        Optional[str]: The directory path if it exists, otherwise None.
+    """
     # If file is local
     dir_path = os.path.join(model_name_or_path, directory)
     if os.path.exists(dir_path):
@@ -560,6 +1247,7 @@ def load_dir_path(
         "library_name": "sentence-transformers",
         "token": token,
         "cache_dir": cache_folder,
+        "local_files_only": local_files_only,
         "tqdm_class": disabled_tqdm,
     }
     # Try to download from the remote
@@ -592,14 +1280,15 @@ def save_to_hub_args_decorator(func):
     return wrapper
 
 
-def get_device_name() -> Literal["mps", "cuda", "npu", "cpu"]:
+def get_device_name() -> Literal["mps", "cuda", "npu", "hpu", "cpu"]:
     """
     Returns the name of the device where this module is running on.
-    It's simple implementation that doesn't cover cases when more powerful GPUs are available and
-    not a primary device ('cuda:0') or MPS device is available, but not configured properly:
-    https://pytorch.org/docs/master/notes/mps.html
 
-    :return: Device name, like 'cuda' or 'cpu'
+    It's a simple implementation that doesn't cover cases when more powerful GPUs are available and
+    not a primary device ('cuda:0') or MPS device is available, but not configured properly.
+
+    Returns:
+        str: Device name, like 'cuda' or 'cpu'
     """
     if torch.cuda.is_available():
         return "cuda"
@@ -607,5 +1296,30 @@ def get_device_name() -> Literal["mps", "cuda", "npu", "cpu"]:
         return "mps"
     elif is_torch_npu_available():
         return "npu"
-    else:
-        return "cpu"
+    elif importlib.util.find_spec("habana_frameworks") is not None:
+        import habana_frameworks.torch.hpu as hthpu
+
+        if hthpu.is_available():
+            return "hpu"
+    return "cpu"
+
+
+def is_accelerate_available() -> bool:
+    """
+    Returns True if the accelerate library is available.
+    """
+    return importlib.util.find_spec("accelerate") is not None
+
+
+def is_datasets_available() -> bool:
+    """
+    Returns True if the datasets library is available.
+    """
+    return importlib.util.find_spec("datasets") is not None
+
+
+def is_training_available() -> bool:
+    """
+    Returns True if we have the required dependencies for training Sentence Transformer models
+    """
+    return is_accelerate_available() and is_datasets_available()

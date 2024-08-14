@@ -2,6 +2,8 @@
 Tests the correct computation of evaluation scores from BinaryClassificationEvaluator
 """
 
+from __future__ import annotations
+
 import csv
 import gzip
 import os
@@ -77,8 +79,9 @@ def test_LabelAccuracyEvaluator(paraphrase_distilroberta_base_v1_model: Sentence
 
     dev_dataloader = DataLoader(dev_samples, shuffle=False, batch_size=16)
     evaluator = evaluation.LabelAccuracyEvaluator(dev_dataloader, softmax_model=train_loss)
-    acc = evaluator(model)
-    assert acc > 0.2
+    metrics = evaluator(model)
+    assert "accuracy" in metrics
+    assert metrics["accuracy"] > 0.2
 
 
 def test_ParaphraseMiningEvaluator(paraphrase_distilroberta_base_v1_model: SentenceTransformer) -> None:
@@ -91,5 +94,5 @@ def test_ParaphraseMiningEvaluator(paraphrase_distilroberta_base_v1_model: Sente
         3: "On the table the cat is",
     }
     data_eval = evaluation.ParaphraseMiningEvaluator(sentences, [(0, 1), (2, 3)])
-    score = data_eval(model)
-    assert score > 0.99
+    metrics = data_eval(model)
+    assert metrics[data_eval.primary_metric] > 0.99

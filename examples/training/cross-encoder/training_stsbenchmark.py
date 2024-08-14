@@ -8,17 +8,18 @@ Usage:
 python training_stsbenchmark.py
 """
 
-from torch.utils.data import DataLoader
+import csv
+import gzip
+import logging
 import math
-from sentence_transformers import LoggingHandler, util
+import os
+from datetime import datetime
+
+from torch.utils.data import DataLoader
+
+from sentence_transformers import InputExample, LoggingHandler, util
 from sentence_transformers.cross_encoder import CrossEncoder
 from sentence_transformers.cross_encoder.evaluation import CECorrelationEvaluator
-from sentence_transformers import InputExample
-import logging
-from datetime import datetime
-import os
-import gzip
-import csv
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -75,7 +76,7 @@ evaluator = CECorrelationEvaluator.from_input_examples(dev_samples, name="sts-de
 
 # Configure the training
 warmup_steps = math.ceil(len(train_dataloader) * num_epochs * 0.1)  # 10% of train data for warm-up
-logger.info("Warmup-steps: {}".format(warmup_steps))
+logger.info(f"Warmup-steps: {warmup_steps}")
 
 
 # Train the model

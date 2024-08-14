@@ -1,12 +1,14 @@
-from torch import nn
-import transformers
+from __future__ import annotations
+
 import torch
+import transformers
 from PIL import Image
+from torch import nn
 
 
 class CLIPModel(nn.Module):
-    def __init__(self, model_name: str = "openai/clip-vit-base-patch32", processor_name=None):
-        super(CLIPModel, self).__init__()
+    def __init__(self, model_name: str = "openai/clip-vit-base-patch32", processor_name=None) -> None:
+        super().__init__()
 
         if processor_name is None:
             processor_name = model_name
@@ -14,10 +16,10 @@ class CLIPModel(nn.Module):
         self.model = transformers.CLIPModel.from_pretrained(model_name)
         self.processor = transformers.CLIPProcessor.from_pretrained(processor_name)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "CLIPModel()"
 
-    def forward(self, features):
+    def forward(self, features: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         image_embeds = []
         text_embeds = []
 
@@ -49,7 +51,7 @@ class CLIPModel(nn.Module):
 
         return features
 
-    def tokenize(self, texts):
+    def tokenize(self, texts, padding: str | bool = True) -> dict[str, torch.Tensor]:
         images = []
         texts_values = []
         image_text_info = []
@@ -62,19 +64,25 @@ class CLIPModel(nn.Module):
                 texts_values.append(data)
                 image_text_info.append(1)
 
-        if len(texts_values) == 0:
-            texts_values = None
-        if len(images) == 0:
-            images = None
+        encoding = {}
+        if len(texts_values):
+            encoding = self.processor.tokenizer(texts_values, return_tensors="pt", padding=padding)
 
-        inputs = self.processor(text=texts_values, images=images, return_tensors="pt", padding=True)
-        inputs["image_text_info"] = image_text_info
-        return inputs
+        if len(images):
+            image_features = self.processor.image_processor(images, return_tensors="pt")
+            encoding["pixel_values"] = image_features.pixel_values
 
-    def save(self, output_path: str):
+        encoding["image_text_info"] = image_text_info
+        return dict(encoding)
+
+    @property
+    def tokenizer(self) -> transformers.CLIPProcessor:
+        return self.processor
+
+    def save(self, output_path: str) -> None:
         self.model.save_pretrained(output_path)
         self.processor.save_pretrained(output_path)
 
     @staticmethod
-    def load(input_path: str):
+    def load(input_path: str) -> CLIPModel:
         return CLIPModel(model_name=input_path)

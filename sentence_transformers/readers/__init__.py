@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from .InputExample import InputExample
 from .LabelSentenceReader import LabelSentenceReader
 from .NLIDataReader import NLIDataReader
-from .STSDataReader import STSDataReader, STSBenchmarkDataReader
+from .STSDataReader import STSBenchmarkDataReader, STSDataReader
 from .TripletReader import TripletReader
 
 __all__ = [

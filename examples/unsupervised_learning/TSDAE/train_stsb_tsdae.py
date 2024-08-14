@@ -1,12 +1,13 @@
-from torch.utils.data import DataLoader
-from sentence_transformers import models, losses, datasets
-from sentence_transformers import LoggingHandler, SentenceTransformer, util, InputExample
-from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
-import logging
-from datetime import datetime
-import os
-import gzip
 import csv
+import gzip
+import logging
+import os
+from datetime import datetime
+
+from torch.utils.data import DataLoader
+
+from sentence_transformers import InputExample, LoggingHandler, SentenceTransformer, datasets, losses, models, util
+from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -47,7 +48,7 @@ if not os.path.exists(wikipedia_dataset_path):
 
 # train_samples is a list of InputExample objects where we pass the same sentence twice to texts, i.e. texts=[sent, sent]
 train_sentences = []
-with open(wikipedia_dataset_path, "r", encoding="utf8") as fIn:
+with open(wikipedia_dataset_path, encoding="utf8") as fIn:
     for line in fIn:
         line = line.strip()
         if len(line) >= 10:
@@ -81,7 +82,7 @@ train_loss = losses.DenoisingAutoEncoderLoss(model, decoder_name_or_path=model_n
 
 
 evaluation_steps = 1000
-logging.info("Training sentences: {}".format(len(train_sentences)))
+logging.info(f"Training sentences: {len(train_sentences)}")
 logging.info("Performance before training")
 dev_evaluator(model)
 

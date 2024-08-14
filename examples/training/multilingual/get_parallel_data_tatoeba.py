@@ -5,10 +5,11 @@ It is available for more than 300 languages.
 This script downloads the Tatoeba corpus and extracts the sentences & translations in the languages you like
 """
 
-import os
-import sentence_transformers
-import tarfile
 import gzip
+import os
+import tarfile
+
+import sentence_transformers
 
 # Note: Tatoeba uses 3 letter languages codes (ISO-639-2),
 # while other datasets like OPUS use 2 letter language codes (ISO-639-1)
@@ -90,10 +91,10 @@ for src_lang in source_languages:
         train_sentences = source_sentences[num_dev_sentences:]
         dev_sentences = source_sentences[0:num_dev_sentences]
 
-        print("{}-{} has {} sentences".format(src_lang, trg_lang, len(source_sentences)))
+        print(f"{src_lang}-{trg_lang} has {len(source_sentences)} sentences")
         if len(dev_sentences) > 0:
             with gzip.open(
-                os.path.join(output_folder, "Tatoeba-{}-{}-dev.tsv.gz".format(src_lang, trg_lang)),
+                os.path.join(output_folder, f"Tatoeba-{src_lang}-{trg_lang}-dev.tsv.gz"),
                 "wt",
                 encoding="utf8",
             ) as fOut:
@@ -103,7 +104,7 @@ for src_lang in source_languages:
 
         if len(train_sentences) > 0:
             with gzip.open(
-                os.path.join(output_folder, "Tatoeba-{}-{}-train.tsv.gz".format(src_lang, trg_lang)),
+                os.path.join(output_folder, f"Tatoeba-{src_lang}-{trg_lang}-train.tsv.gz"),
                 "wt",
                 encoding="utf8",
             ) as fOut:

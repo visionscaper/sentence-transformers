@@ -9,17 +9,19 @@ python training_quora_duplicate_questions.py
 
 """
 
-from torch.utils.data import DataLoader
+import csv
+import logging
 import math
+import os
+from datetime import datetime
+from zipfile import ZipFile
+
+from torch.utils.data import DataLoader
+
 from sentence_transformers import LoggingHandler, util
 from sentence_transformers.cross_encoder import CrossEncoder
 from sentence_transformers.cross_encoder.evaluation import CEBinaryClassificationEvaluator
 from sentence_transformers.readers import InputExample
-import logging
-from datetime import datetime
-import os
-import csv
-from zipfile import ZipFile
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -43,7 +45,7 @@ if not os.path.exists(dataset_path):
 # Read the quora dataset split for classification
 logger.info("Read train dataset")
 train_samples = []
-with open(os.path.join(dataset_path, "classification", "train_pairs.tsv"), "r", encoding="utf8") as fIn:
+with open(os.path.join(dataset_path, "classification", "train_pairs.tsv"), encoding="utf8") as fIn:
     reader = csv.DictReader(fIn, delimiter="\t", quoting=csv.QUOTE_NONE)
     for row in reader:
         train_samples.append(InputExample(texts=[row["question1"], row["question2"]], label=int(row["is_duplicate"])))
@@ -52,7 +54,7 @@ with open(os.path.join(dataset_path, "classification", "train_pairs.tsv"), "r", 
 
 logger.info("Read dev dataset")
 dev_samples = []
-with open(os.path.join(dataset_path, "classification", "dev_pairs.tsv"), "r", encoding="utf8") as fIn:
+with open(os.path.join(dataset_path, "classification", "dev_pairs.tsv"), encoding="utf8") as fIn:
     reader = csv.DictReader(fIn, delimiter="\t", quoting=csv.QUOTE_NONE)
     for row in reader:
         dev_samples.append(InputExample(texts=[row["question1"], row["question2"]], label=int(row["is_duplicate"])))
@@ -77,7 +79,7 @@ evaluator = CEBinaryClassificationEvaluator.from_input_examples(dev_samples, nam
 
 # Configure the training
 warmup_steps = math.ceil(len(train_dataloader) * num_epochs * 0.1)  # 10% of train data for warm-up
-logger.info("Warmup-steps: {}".format(warmup_steps))
+logger.info(f"Warmup-steps: {warmup_steps}")
 
 
 # Train the model

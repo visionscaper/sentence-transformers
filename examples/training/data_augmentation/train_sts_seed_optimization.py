@@ -23,19 +23,21 @@ python train_sts_seed_optimization.py pretrained_transformer_model_name seed_cou
 python train_sts_seed_optimization.py bert-base-uncased 10 0.3
 """
 
-from torch.utils.data import DataLoader
+import csv
+import gzip
+import logging
 import math
-import torch
+import os
 import random
+import sys
+
 import numpy as np
-from sentence_transformers import SentenceTransformer, LoggingHandler, losses, models, util
+import torch
+from torch.utils.data import DataLoader
+
+from sentence_transformers import LoggingHandler, SentenceTransformer, losses, models, util
 from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
 from sentence_transformers.readers import InputExample
-import logging
-import sys
-import os
-import gzip
-import csv
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -56,11 +58,11 @@ model_name = sys.argv[1] if len(sys.argv) > 1 else "bert-base-uncased"
 seed_count = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 stop_after = float(sys.argv[3]) if len(sys.argv) > 3 else 0.3
 
-logging.info("Train and Evaluate: {} Random Seeds".format(seed_count))
+logging.info(f"Train and Evaluate: {seed_count} Random Seeds")
 
 for seed in range(seed_count):
     # Setting seed for all random initializations
-    logging.info("##### Seed {} #####".format(seed))
+    logging.info(f"##### Seed {seed} #####")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -115,9 +117,9 @@ for seed in range(seed_count):
     # We find from (Dodge et al.) that 20-30% is often ideal for convergence of random seed
     steps_per_epoch = math.ceil(len(train_dataloader) * stop_after)
 
-    logging.info("Warmup-steps: {}".format(warmup_steps))
+    logging.info(f"Warmup-steps: {warmup_steps}")
 
-    logging.info("Early-stopping: {}% of the training-data".format(int(stop_after * 100)))
+    logging.info(f"Early-stopping: {int(stop_after * 100)}% of the training-data")
 
     # Train the model
     model.fit(

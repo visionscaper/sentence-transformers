@@ -1,5 +1,7 @@
-import random
+from __future__ import annotations
+
 import math
+import random
 
 
 class NoDuplicatesDataLoader:

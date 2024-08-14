@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import List, Iterable
+from typing import Iterable
 
 ENGLISH_STOP_WORDS = [
     "!",
@@ -56,7 +58,7 @@ ENGLISH_STOP_WORDS = [
     "am",
     "among",
     "amongst",
-    "amoungst",
+    "amoungst",  # codespell:ignore
     "amount",
     "an",
     "and",
@@ -97,7 +99,7 @@ ENGLISH_STOP_WORDS = [
     "call",
     "can",
     "cannot",
-    "cant",
+    "cant",  # codespell:ignore
     "co",
     "con",
     "could",
@@ -235,7 +237,7 @@ ENGLISH_STOP_WORDS = [
     "no",
     "nobody",
     "none",
-    "noone",
+    "noone",  # codespell:ignore
     "nor",
     "not",
     "nothing",
@@ -347,7 +349,7 @@ ENGLISH_STOP_WORDS = [
     "very",
     "via",
     "was",
-    "wasn",
+    "wasn",  # codespell:ignore
     "we",
     "well",
     "were",
@@ -401,7 +403,7 @@ class WordTokenizer(ABC):
         pass
 
     @abstractmethod
-    def tokenize(self, text: str) -> List[int]:
+    def tokenize(self, text: str, **kwargs) -> list[int]:
         pass
 
     @abstractmethod

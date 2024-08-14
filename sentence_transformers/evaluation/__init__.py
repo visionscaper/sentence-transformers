@@ -1,5 +1,5 @@
-from .SentenceEvaluator import SentenceEvaluator
-from .SimilarityFunction import SimilarityFunction
+from __future__ import annotations
+
 from .BinaryClassificationEvaluator import BinaryClassificationEvaluator
 from .EmbeddingSimilarityEvaluator import EmbeddingSimilarityEvaluator
 from .InformationRetrievalEvaluator import InformationRetrievalEvaluator
@@ -7,10 +7,12 @@ from .LabelAccuracyEvaluator import LabelAccuracyEvaluator
 from .MSEEvaluator import MSEEvaluator
 from .MSEEvaluatorFromDataFrame import MSEEvaluatorFromDataFrame
 from .ParaphraseMiningEvaluator import ParaphraseMiningEvaluator
+from .RerankingEvaluator import RerankingEvaluator
+from .SentenceEvaluator import SentenceEvaluator
 from .SequentialEvaluator import SequentialEvaluator
+from .SimilarityFunction import SimilarityFunction
 from .TranslationEvaluator import TranslationEvaluator
 from .TripletEvaluator import TripletEvaluator
-from .RerankingEvaluator import RerankingEvaluator
 
 __all__ = [
     "SentenceEvaluator",

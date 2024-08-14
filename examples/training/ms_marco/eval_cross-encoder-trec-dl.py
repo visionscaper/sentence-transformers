@@ -14,14 +14,16 @@ python eval_cross-encoder-trec-dl.py cross-encoder-model-name
 """
 
 import gzip
-from collections import defaultdict
 import logging
-import tqdm
-import numpy as np
-import sys
-import pytrec_eval
-from sentence_transformers import util, CrossEncoder
 import os
+import sys
+from collections import defaultdict
+
+import numpy as np
+import pytrec_eval
+import tqdm
+
+from sentence_transformers import CrossEncoder, util
 
 data_folder = "trec2019-data"
 os.makedirs(data_folder, exist_ok=True)
@@ -32,7 +34,7 @@ queries_filepath = os.path.join(data_folder, "msmarco-test2019-queries.tsv.gz")
 if not os.path.exists(queries_filepath):
     logging.info("Download " + os.path.basename(queries_filepath))
     util.http_get(
-        "https://msmarco.blob.core.windows.net/msmarcoranking/msmarco-test2019-queries.tsv.gz", queries_filepath
+        "https://msmarco.z22.web.core.windows.net/msmarcoranking/msmarco-test2019-queries.tsv.gz", queries_filepath
     )
 
 with gzip.open(queries_filepath, "rt", encoding="utf8") as fIn:
@@ -69,7 +71,8 @@ passage_filepath = os.path.join(data_folder, "msmarco-passagetest2019-top1000.ts
 if not os.path.exists(passage_filepath):
     logging.info("Download " + os.path.basename(passage_filepath))
     util.http_get(
-        "https://msmarco.blob.core.windows.net/msmarcoranking/msmarco-passagetest2019-top1000.tsv.gz", passage_filepath
+        "https://msmarco.z22.web.core.windows.net/msmarcoranking/msmarco-passagetest2019-top1000.tsv.gz",
+        passage_filepath,
     )
 
 
@@ -82,7 +85,7 @@ with gzip.open(passage_filepath, "rt", encoding="utf8") as fIn:
 
         passage_cand[qid].append([pid, passage])
 
-logging.info("Queries: {}".format(len(queries)))
+logging.info(f"Queries: {len(queries)}")
 
 queries_result_list = []
 run = {}

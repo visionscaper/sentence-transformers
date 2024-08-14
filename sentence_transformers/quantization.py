@@ -1,10 +1,11 @@
-import time
-from torch import Tensor
-from typing import List, Literal, Tuple, TYPE_CHECKING
-import numpy as np
-import logging
-from typing import Dict, Optional, Union
+from __future__ import annotations
 
+import logging
+import time
+from typing import TYPE_CHECKING, Literal
+
+import numpy as np
+from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
@@ -16,17 +17,17 @@ if TYPE_CHECKING:
 
 def semantic_search_faiss(
     query_embeddings: np.ndarray,
-    corpus_embeddings: Optional[np.ndarray] = None,
-    corpus_index: Optional["faiss.Index"] = None,
+    corpus_embeddings: np.ndarray | None = None,
+    corpus_index: faiss.Index | None = None,
     corpus_precision: Literal["float32", "uint8", "ubinary"] = "float32",
     top_k: int = 10,
-    ranges: Optional[np.ndarray] = None,
-    calibration_embeddings: Optional[np.ndarray] = None,
+    ranges: np.ndarray | None = None,
+    calibration_embeddings: np.ndarray | None = None,
     rescore: bool = True,
     rescore_multiplier: int = 2,
     exact: bool = True,
     output_index: bool = False,
-) -> Tuple[List[List[Dict[str, Union[int, float]]]], float, "faiss.Index"]:
+) -> tuple[list[list[dict[str, int | float]]], float, faiss.Index]:
     """
     Performs semantic search using the FAISS library.
 
@@ -37,31 +38,53 @@ def semantic_search_faiss(
     Only if these conditions are true, will we search for `top_k * rescore_multiplier` samples and then rescore to only
     keep `top_k`.
 
-    :param query_embeddings: Embeddings of the query sentences. Ideally not quantized to allow for rescoring.
-    :param corpus_embeddings: Embeddings of the corpus sentences. Either `corpus_embeddings` or `corpus_index` should
-        be used, not both. The embeddings can be quantized to "int8" or "binary" for more efficient search.
-    :param corpus_index: FAISS index for the corpus sentences. Either `corpus_embeddings` or `corpus_index` should
-        be used, not both.
-    :param corpus_precision: Precision of the corpus embeddings. The options are "float32", "int8", or "binary".
-        Default is "float32".
-    :param top_k: Number of top results to retrieve. Default is 10.
-    :param ranges: Ranges for quantization of embeddings. This is only used for int8 quantization, where the ranges
-        refers to the minimum and maximum values for each dimension. So, it's a 2D array with shape (2, embedding_dim).
-        Default is None, which means that the ranges will be calculated from the calibration embeddings.
-    :param calibration_embeddings: Embeddings used for calibration during quantization. This is only used for int8
-        quantization, where the calibration embeddings can be used to compute ranges, i.e. the minimum and maximum
-        values for each dimension. Default is None, which means that the ranges will be calculated from the query
-        embeddings. This is not recommended.
-    :param rescore: Whether to perform rescoring. Note that rescoring still will only be used if the query embeddings
-        are not quantized and the corpus is quantized, i.e. the corpus precision is not "float32". Default is True.
-    :param rescore_multiplier: Oversampling factor for rescoring. The code will now search `top_k * rescore_multiplier` samples
-        and then rescore to only keep `top_k`. Default is 2.
-    :param exact: Whether to use exact search or approximate search. Default is True.
-    :param output_index: Whether to output the FAISS index used for the search. Default is False.
+    Args:
+        query_embeddings: Embeddings of the query sentences. Ideally not
+            quantized to allow for rescoring.
+        corpus_embeddings: Embeddings of the corpus sentences. Either
+            `corpus_embeddings` or `corpus_index` should be used, not
+            both. The embeddings can be quantized to "int8" or "binary"
+            for more efficient search.
+        corpus_index: FAISS index for the corpus sentences. Either
+            `corpus_embeddings` or `corpus_index` should be used, not
+            both.
+        corpus_precision: Precision of the corpus embeddings. The
+            options are "float32", "int8", or "binary". Default is
+            "float32".
+        top_k: Number of top results to retrieve. Default is 10.
+        ranges: Ranges for quantization of embeddings. This is only used
+            for int8 quantization, where the ranges refers to the
+            minimum and maximum values for each dimension. So, it's a 2D
+            array with shape (2, embedding_dim). Default is None, which
+            means that the ranges will be calculated from the
+            calibration embeddings.
+        calibration_embeddings: Embeddings used for calibration during
+            quantization. This is only used for int8 quantization, where
+            the calibration embeddings can be used to compute ranges,
+            i.e. the minimum and maximum values for each dimension.
+            Default is None, which means that the ranges will be
+            calculated from the query embeddings. This is not
+            recommended.
+        rescore: Whether to perform rescoring. Note that rescoring still
+            will only be used if the query embeddings are not quantized
+            and the corpus is quantized, i.e. the corpus precision is
+            not "float32". Default is True.
+        rescore_multiplier: Oversampling factor for rescoring. The code
+            will now search `top_k * rescore_multiplier` samples and
+            then rescore to only keep `top_k`. Default is 2.
+        exact: Whether to use exact search or approximate search.
+            Default is True.
+        output_index: Whether to output the FAISS index used for the
+            search. Default is False.
 
-    :return: A tuple containing a list of search results and the time taken for the search. If `output_index` is True,
-        the tuple will also contain the FAISS index used for the search.
-    :raises ValueError: If both `corpus_embeddings` and `corpus_index` are provided or if neither is provided.
+    Returns:
+        A tuple containing a list of search results and the time taken
+        for the search. If `output_index` is True, the tuple will also
+        contain the FAISS index used for the search.
+
+    Raises:
+        ValueError: If both `corpus_embeddings` and `corpus_index` are
+            provided or if neither is provided.
 
     The list of search results is in the format: [[{"corpus_id": int, "score": float}, ...], ...]
     The time taken for the search is a float value.
@@ -161,17 +184,17 @@ def semantic_search_faiss(
 
 def semantic_search_usearch(
     query_embeddings: np.ndarray,
-    corpus_embeddings: Optional[np.ndarray] = None,
-    corpus_index: Optional["usearch.index.Index"] = None,
+    corpus_embeddings: np.ndarray | None = None,
+    corpus_index: usearch.index.Index | None = None,
     corpus_precision: Literal["float32", "int8", "binary"] = "float32",
     top_k: int = 10,
-    ranges: Optional[np.ndarray] = None,
-    calibration_embeddings: Optional[np.ndarray] = None,
+    ranges: np.ndarray | None = None,
+    calibration_embeddings: np.ndarray | None = None,
     rescore: bool = True,
     rescore_multiplier: int = 2,
     exact: bool = True,
     output_index: bool = False,
-) -> Tuple[List[List[Dict[str, Union[int, float]]]], float, "usearch.index.Index"]:
+) -> tuple[list[list[dict[str, int | float]]], float, usearch.index.Index]:
     """
     Performs semantic search using the usearch library.
 
@@ -182,37 +205,59 @@ def semantic_search_usearch(
     Only if these conditions are true, will we search for `top_k * rescore_multiplier` samples and then rescore to only
     keep `top_k`.
 
-    :param query_embeddings: Embeddings of the query sentences. Ideally not quantized to allow for rescoring.
-    :param corpus_embeddings: Embeddings of the corpus sentences. Either `corpus_embeddings` or `corpus_index` should
-        be used, not both. The embeddings can be quantized to "int8" or "binary" for more efficient search.
-    :param corpus_index: usearch index for the corpus sentences. Either `corpus_embeddings` or `corpus_index` should
-        be used, not both.
-    :param corpus_precision: Precision of the corpus embeddings. The options are "float32", "int8", or "binary".
-        Default is "float32".
-    :param top_k: Number of top results to retrieve. Default is 10.
-    :param ranges: Ranges for quantization of embeddings. This is only used for int8 quantization, where the ranges
-        refers to the minimum and maximum values for each dimension. So, it's a 2D array with shape (2, embedding_dim).
-        Default is None, which means that the ranges will be calculated from the calibration embeddings.
-    :param calibration_embeddings: Embeddings used for calibration during quantization. This is only used for int8
-        quantization, where the calibration embeddings can be used to compute ranges, i.e. the minimum and maximum
-        values for each dimension. Default is None, which means that the ranges will be calculated from the query
-        embeddings. This is not recommended.
-    :param rescore: Whether to perform rescoring. Note that rescoring still will only be used if the query embeddings
-        are not quantized and the corpus is quantized, i.e. the corpus precision is not "float32". Default is True.
-    :param rescore_multiplier: Oversampling factor for rescoring. The code will now search `top_k * rescore_multiplier` samples
-        and then rescore to only keep `top_k`. Default is 2.
-    :param exact: Whether to use exact search or approximate search. Default is True.
-    :param output_index: Whether to output the usearch index used for the search. Default is False.
+    Args:
+        query_embeddings: Embeddings of the query sentences. Ideally not
+            quantized to allow for rescoring.
+        corpus_embeddings: Embeddings of the corpus sentences. Either
+            `corpus_embeddings` or `corpus_index` should be used, not
+            both. The embeddings can be quantized to "int8" or "binary"
+            for more efficient search.
+        corpus_index: usearch index for the corpus sentences. Either
+            `corpus_embeddings` or `corpus_index` should be used, not
+            both.
+        corpus_precision: Precision of the corpus embeddings. The
+            options are "float32", "int8", or "binary". Default is
+            "float32".
+        top_k: Number of top results to retrieve. Default is 10.
+        ranges: Ranges for quantization of embeddings. This is only used
+            for int8 quantization, where the ranges refers to the
+            minimum and maximum values for each dimension. So, it's a 2D
+            array with shape (2, embedding_dim). Default is None, which
+            means that the ranges will be calculated from the
+            calibration embeddings.
+        calibration_embeddings: Embeddings used for calibration during
+            quantization. This is only used for int8 quantization, where
+            the calibration embeddings can be used to compute ranges,
+            i.e. the minimum and maximum values for each dimension.
+            Default is None, which means that the ranges will be
+            calculated from the query embeddings. This is not
+            recommended.
+        rescore: Whether to perform rescoring. Note that rescoring still
+            will only be used if the query embeddings are not quantized
+            and the corpus is quantized, i.e. the corpus precision is
+            not "float32". Default is True.
+        rescore_multiplier: Oversampling factor for rescoring. The code
+            will now search `top_k * rescore_multiplier` samples and
+            then rescore to only keep `top_k`. Default is 2.
+        exact: Whether to use exact search or approximate search.
+            Default is True.
+        output_index: Whether to output the usearch index used for the
+            search. Default is False.
 
-    :return: A tuple containing a list of search results and the time taken for the search. If `output_index` is True,
-        the tuple will also contain the usearch index used for the search.
-    :raises ValueError: If both `corpus_embeddings` and `corpus_index` are provided or if neither is provided.
+    Returns:
+        A tuple containing a list of search results and the time taken
+        for the search. If `output_index` is True, the tuple will also
+        contain the usearch index used for the search.
+
+    Raises:
+        ValueError: If both `corpus_embeddings` and `corpus_index` are
+            provided or if neither is provided.
 
     The list of search results is in the format: [[{"corpus_id": int, "score": float}, ...], ...]
     The time taken for the search is a float value.
     """
-    from usearch.index import Index
     from usearch.compiled import ScalarKind
+    from usearch.index import Index
 
     if corpus_embeddings is not None and corpus_index is not None:
         raise ValueError("Only corpus_embeddings or corpus_index should be used, not both.")
@@ -239,7 +284,7 @@ def semantic_search_usearch(
             corpus_index = Index(
                 ndim=corpus_embeddings.shape[1],
                 metric="hamming",
-                dtype="i8",
+                dtype="b1",
             )
         corpus_index.add(np.arange(len(corpus_embeddings)), corpus_embeddings)
 
@@ -277,6 +322,11 @@ def semantic_search_usearch(
     scores = matches.distances
     indices = matches.keys
 
+    if scores.ndim < 2:
+        scores = np.atleast_2d(scores)
+    if indices.ndim < 2:
+        indices = np.atleast_2d(indices)
+
     # If rescoring is enabled, we need to rescore the results using the rescore_embeddings
     if rescore_embeddings is not None:
         top_k_embeddings = np.array([corpus_index.get(query_indices) for query_indices in indices])
@@ -313,27 +363,36 @@ def semantic_search_usearch(
 
 
 def quantize_embeddings(
-    embeddings: Union[Tensor, np.ndarray],
+    embeddings: Tensor | np.ndarray,
     precision: Literal["float32", "int8", "uint8", "binary", "ubinary"],
-    ranges: Optional[np.ndarray] = None,
-    calibration_embeddings: Optional[np.ndarray] = None,
+    ranges: np.ndarray | None = None,
+    calibration_embeddings: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Quantizes embeddings to a lower precision. This can be used to reduce the memory footprint and increase the
     speed of similarity search. The supported precisions are "float32", "int8", "uint8", "binary", and "ubinary".
 
-    :param embeddings: Unquantized (e.g. float) embeddings with to quantize to a given precision
-    :param precision: The precision to convert to. Options are "float32", "int8", "uint8", "binary", "ubinary".
-    :param ranges: Ranges for quantization of embeddings. This is only used for int8 quantization, where the ranges
-        refers to the minimum and maximum values for each dimension. So, it's a 2D array with shape (2, embedding_dim).
-        Default is None, which means that the ranges will be calculated from the calibration embeddings.
-    :type ranges: Optional[np.ndarray]
-    :param calibration_embeddings: Embeddings used for calibration during quantization. This is only used for int8
-        quantization, where the calibration embeddings can be used to compute ranges, i.e. the minimum and maximum
-        values for each dimension. Default is None, which means that the ranges will be calculated from the query
-        embeddings. This is not recommended.
-    :type calibration_embeddings: Optional[np.ndarray]
-    :return: Quantized embeddings with the specified precision
+    Args:
+        embeddings: Unquantized (e.g. float) embeddings with to quantize
+            to a given precision
+        precision: The precision to convert to. Options are "float32",
+            "int8", "uint8", "binary", "ubinary".
+        ranges (Optional[np.ndarray]): Ranges for quantization of
+            embeddings. This is only used for int8 quantization, where
+            the ranges refers to the minimum and maximum values for each
+            dimension. So, it's a 2D array with shape (2,
+            embedding_dim). Default is None, which means that the ranges
+            will be calculated from the calibration embeddings.
+        calibration_embeddings (Optional[np.ndarray]): Embeddings used
+            for calibration during quantization. This is only used for
+            int8 quantization, where the calibration embeddings can be
+            used to compute ranges, i.e. the minimum and maximum values
+            for each dimension. Default is None, which means that the
+            ranges will be calculated from the query embeddings. This is
+            not recommended.
+
+    Returns:
+        Quantized embeddings with the specified precision
     """
     if isinstance(embeddings, Tensor):
         embeddings = embeddings.cpu().numpy()

@@ -1,10 +1,11 @@
-from sentence_transformers import SentenceTransformer, LoggingHandler
-from sentence_transformers import models, util, evaluation, losses
+import gzip
 import logging
 import os
-import gzip
 from datetime import datetime
+
 import torch
+
+from sentence_transformers import LoggingHandler, SentenceTransformer, evaluation, losses, models, util
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -78,7 +79,7 @@ for id, sentence in corpus.items():
     if id not in dev_test_ids:
         train_sentences.append(sentence)
 
-logging.info("{} train sentences".format(len(train_sentences)))
+logging.info(f"{len(train_sentences)} train sentences")
 
 ################# Initialize an SBERT model #################
 

@@ -1,11 +1,12 @@
-from sentence_transformers import SentenceTransformer, LoggingHandler
-from sentence_transformers import models, util, datasets, evaluation, losses
+import gzip
 import logging
 import os
-import gzip
-from torch.utils.data import DataLoader
-from datetime import datetime
 import sys
+from datetime import datetime
+
+from torch.utils.data import DataLoader
+
+from sentence_transformers import LoggingHandler, SentenceTransformer, datasets, evaluation, losses, models, util
 
 #### Just some code to print debug information to stdout
 logging.basicConfig(
@@ -71,7 +72,7 @@ for id, sentence in corpus.items():
         train_sentences.append(sentence)
 
 
-logging.info("{} train sentences".format(len(train_sentences)))
+logging.info(f"{len(train_sentences)} train sentences")
 
 ################# Initialize an SBERT model #################
 model_name = sys.argv[1] if len(sys.argv) >= 2 else "bert-base-uncased"

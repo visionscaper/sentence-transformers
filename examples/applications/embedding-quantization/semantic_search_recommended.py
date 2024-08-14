@@ -8,13 +8,14 @@ import json
 import os
 import time
 
+import faiss
 import numpy as np
+from datasets import load_dataset
+from usearch.index import Index
+
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.quantization import quantize_embeddings
-from datasets import load_dataset
 
-import faiss
-from usearch.index import Index
 # We use usearch as it can efficiently load int8 vectors from disk.
 
 # Load the model
@@ -78,7 +79,6 @@ def search(query, top_k: int = 10, rescore_multiplier: int = 4):
     # 3. Search the binary index
     start_time = time.time()
     _scores, binary_ids = binary_index.search(query_embedding_ubinary, top_k * rescore_multiplier)
-    # return _scores[0], binary_ids[0], {}
     binary_ids = binary_ids[0]
     search_time = time.time() - start_time
 
